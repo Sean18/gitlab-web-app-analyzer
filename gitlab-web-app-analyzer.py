@@ -129,7 +129,9 @@ class GitLabAnalyzer:
             'Presentation', 'Web', 'WebApi', 'Application',
             # Sample/example directories (common in framework repositories)
             'example', 'examples', 'sample', 'samples', 'demo', 'demos',
-            'samples/springboot3/pet-store', 'samples/spring', 'samples/jersey'
+            'samples/springboot3/pet-store', 'samples/spring', 'samples/jersey',
+            # Spring Guide directories (common in official Spring guides)
+            'complete', 'initial'
         ]
         
         
