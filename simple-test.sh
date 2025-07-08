@@ -11,42 +11,43 @@ GITLAB_TOKEN="$1"
 OUTPUT_FILE="test-results.csv"
 
 # All web applications from latest analysis (excluding deleted repos)
-TEST_APPS="
-test-laravel-invoice-ninja
-test-codeigniter-app
-test-python-serverless
-test-go-serverless
-test-go-cms
-test-gin-rest-api
-test-symfony-demo
-test-quarkus-todo
-test-fastapi-fullstack
-test-django-cms
-test-dotnet-serverless
-test-blazor-application
-test-aspnet-clean-arch
-test-aspnet-ecommerce
-test-nodejs-serverless
-test-mean-stack
-test-express-ecommerce
-test-java-serverless
-test-spring-ecommerce
-test-spring-petclinic
-Umbraco CMS
-Dnn.Platform
-BlogEngine.NET
-NopCommerce
-OrchardCore
-Hippotech 2.0 Github
-WebGoat
-Juice Shop
-Gs Reactive Rest Service
-Node Express Realworld Example App
-Spring Petclinic
-Go Gin Example
-Laravel
-Flask
-"
+# Using array to properly handle names with spaces
+TEST_APPS=(
+"test-laravel-invoice-ninja"
+"test-codeigniter-app"
+"test-python-serverless"
+"test-go-serverless"
+"test-go-cms"
+"test-gin-rest-api"
+"test-symfony-demo"
+"test-quarkus-todo"
+"test-fastapi-fullstack"
+"test-django-cms"
+"test-dotnet-serverless"
+"test-blazor-application"
+"test-aspnet-clean-arch"
+"test-aspnet-ecommerce"
+"test-nodejs-serverless"
+"test-mean-stack"
+"test-express-ecommerce"
+"test-java-serverless"
+"test-spring-ecommerce"
+"test-spring-petclinic"
+"Umbraco CMS"
+"Dnn.Platform"
+"BlogEngine.NET"
+"NopCommerce"
+"OrchardCore"
+"Hippotech 2.0 Github"
+"WebGoat"
+"Juice Shop"
+"Gs Reactive Rest Service"
+"Node Express Realworld Example App"
+"Spring Petclinic"
+"Go Gin Example"
+"Laravel"
+"Flask"
+)
 
 # Check prerequisites
 if [ -z "$GITLAB_TOKEN" ]; then
@@ -90,9 +91,8 @@ PASSED=0
 FAILED=0
 TOTAL=0
 
-for app in $TEST_APPS; do
-    app=$(echo "$app" | xargs)  # Trim whitespace
-    if [ -n "$app" ]; then  # Skip empty lines
+for app in "${TEST_APPS[@]}"; do
+    if [ -n "$app" ]; then  # Skip empty entries
         ((TOTAL++))
         if grep -q "$app.*,YES," "$OUTPUT_FILE"; then
             echo "✅ $app: DETECTED"
@@ -127,8 +127,7 @@ else
     # Show which apps failed
     echo ""
     echo "Failed applications:"
-    for app in $TEST_APPS; do
-        app=$(echo "$app" | xargs)
+    for app in "${TEST_APPS[@]}"; do
         if [ -n "$app" ]; then
             if ! grep -q "$app.*,YES," "$OUTPUT_FILE"; then
                 echo "  - $app"
