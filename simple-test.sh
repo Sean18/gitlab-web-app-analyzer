@@ -61,6 +61,13 @@ if [ ! -f "gitlab-web-app-analyzer.py" ]; then
     exit 1
 fi
 
+if ! command -v bc &> /dev/null; then
+    echo "Error: bc command not found. Please install bc for performance calculations."
+    echo "  macOS: brew install bc"
+    echo "  Ubuntu/Debian: sudo apt-get install bc"
+    exit 1
+fi
+
 echo "Simple Enterprise Regression Test"
 echo "================================="
 echo "Testing all web applications for detection (excluding deleted repos)"
@@ -74,6 +81,16 @@ python3 gitlab-web-app-analyzer.py --gitlab-url "$GITLAB_URL" --token "$GITLAB_T
 
 end_time=$(date +%s)
 execution_time=$((end_time - start_time))
+
+# Extract repository count from CSV output file (more reliable than parsing console output)
+if [ -f "$OUTPUT_FILE" ]; then
+    total_repos=$(tail -n +2 "$OUTPUT_FILE" | wc -l | xargs)  # Count CSV rows minus header
+    if [ -z "$total_repos" ] || [ "$total_repos" -eq 0 ]; then
+        total_repos=1  # Fallback to prevent division by zero
+    fi
+else
+    total_repos=1  # Fallback if CSV file not found
+fi
 
 echo "Analyzer completed in ${execution_time}s"
 echo ""
@@ -113,15 +130,56 @@ echo "Not detected: $FAILED"
 echo "Detection rate: $((PASSED * 100 / TOTAL))%"
 echo "Execution time: ${execution_time}s"
 
+# Performance benchmark calculations
+seconds_per_repo=$(echo "scale=2; $execution_time / $total_repos" | bc)
+minutes_per_1000=$(echo "scale=1; ($seconds_per_repo * 1000) / 60" | bc)
+target_minutes=30.0
+target_seconds_per_repo=1.8
+
+echo ""
+echo "Performance Benchmark:"
+echo "===================="
+echo "Total repositories analyzed: $total_repos"
+echo "Average per repository: ${seconds_per_repo}s"
+echo "Projected for 1000 repos: ${minutes_per_1000} minutes"
+echo "Performance target: ${target_minutes} minutes (${target_seconds_per_repo}s per repo)"
+
+# Performance pass/fail logic
+performance_pass=$(echo "$seconds_per_repo <= $target_seconds_per_repo" | bc)
+if [ "$performance_pass" -eq 1 ]; then
+    echo "Performance result: ✅ PASS"
+    performance_status="PASS"
+else
+    echo "Performance result: ❌ FAIL"
+    performance_status="FAIL"
+fi
+
 # Final result
-if [ $FAILED -eq 0 ]; then
-    echo ""
-    echo "🎉 SUCCESS: All enterprise applications detected!"
+echo ""
+detection_success=$([ $FAILED -eq 0 ] && echo "true" || echo "false")
+performance_success=$([ "$performance_status" = "PASS" ] && echo "true" || echo "false")
+
+if [ "$detection_success" = "true" ] && [ "$performance_success" = "true" ]; then
+    echo "🎉 SUCCESS: All tests passed!"
+    echo "✅ Detection: All enterprise applications detected (100%)"
+    echo "✅ Performance: Meets 30-minute target for 1000 repos"
     echo "GitLab Web App Analyzer is working correctly."
     exit 0
+elif [ "$detection_success" = "true" ] && [ "$performance_success" = "false" ]; then
+    echo "⚠️  PARTIAL SUCCESS: Detection passed, performance failed"
+    echo "✅ Detection: All enterprise applications detected (100%)"
+    echo "❌ Performance: Exceeds 30-minute target for 1000 repos"
+    echo "Consider optimizing analyzer performance."
+    exit 1
 else
+    echo "❌ FAILURE: Detection test failed"
+    echo "❌ Detection: $FAILED applications not detected"
+    if [ "$performance_success" = "false" ]; then
+        echo "❌ Performance: Exceeds 30-minute target for 1000 repos"
+    else
+        echo "✅ Performance: Meets 30-minute target for 1000 repos"
+    fi
     echo ""
-    echo "❌ FAILURE: $FAILED applications not detected"
     echo "Please investigate the following:"
     
     # Show which apps failed
