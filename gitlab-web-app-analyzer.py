@@ -114,49 +114,6 @@ class GitLabAnalyzer:
                 else:
                     raise
     
-    def _get_directories_to_search(self, project_obj: Any, max_depth: int) -> List[str]:
-        """Get directories to search up to specified depth"""
-        directories = ['']  # Always include root directory
-        
-        try:
-            # Get shallow tree to see what directories exist
-            self._rate_limit_wait()
-            tree = self._api_call_with_retry(
-                lambda: project_obj.repository_tree(get_all=True, recursive=False)
-            )
-            
-            if not tree:
-                return directories
-            
-            # Add first-level directories
-            first_level_dirs = []
-            for item in tree:
-                if item.get('type') == 'tree':  # Directory
-                    dir_name = item.get('name', '')
-                    directories.append(dir_name)
-                    first_level_dirs.append(dir_name)
-            
-            # If max_depth > 1, get second-level directories
-            if max_depth > 1:
-                for dir_name in first_level_dirs:
-                    try:
-                        self._rate_limit_wait()
-                        subtree = project_obj.repository_tree(path=dir_name, get_all=True, recursive=False)
-                        
-                        for item in subtree:
-                            if item.get('type') == 'tree':
-                                subdir_name = item.get('name', '')
-                                directories.append(f"{dir_name}/{subdir_name}")
-                    except Exception:
-                        # Skip if we can't access this directory
-                        continue
-            
-            return directories
-            
-        except Exception:
-            # If we can't get directory structure, just return root
-            return ['']
-    
     def get_repositories(self, name_filter: Optional[str] = None) -> List[Any]:
         """Get list of repositories with optional name filtering"""
         try:
@@ -223,78 +180,34 @@ class GitLabAnalyzer:
             'RouteConfig.cs', 'WebApiConfig.cs', 'BundleConfig.cs', 'FilterConfig.cs'
         ]
         
-        # Use configurable search depth instead of hardcoded paths
-        directories_to_search = self._get_directories_to_search(project_obj, self.search_depth)
+        # Get entire repository tree in one API call using recursive=True
+        self._rate_limit_wait()
+        full_tree = self._api_call_with_retry(
+            lambda: project_obj.repository_tree(get_all=True, recursive=True)
+        )
         
         
         try:
-            # First, get a shallow tree to see what directories exist (much faster)
-            self._rate_limit_wait()
-            shallow_tree = self._api_call_with_retry(
-                lambda: project_obj.repository_tree(get_all=True, recursive=False)
-            )
-            if not shallow_tree:
-                shallow_tree = []
-            
-            # Find directories that match our search patterns
-            existing_dirs = set()
-            multi_level_dirs = set()  # For paths like src/Presentation
-            
-            for item in shallow_tree:
-                if item.get('type') == 'tree':  # Directory
-                    dir_name = item.get('name', '')
-                    if dir_name in search_paths[1:]:  # Skip empty string (root)
-                        existing_dirs.add(dir_name)
-                    
-                    # Check for multi-level paths (e.g., if we see 'src', check for 'src/Presentation')
-                    for path in search_paths:
-                        if '/' in path and path.startswith(dir_name + '/'):
-                            multi_level_dirs.add(path)
+            # Process all files from the recursive tree in one pass
+            if full_tree:
+                for item in full_tree:
+                    if item.get('type') == 'blob':  # File
+                        file_path = item.get('path', '')
+                        file_name = item.get('name', '')
+                        
+                        # Check depth constraint
+                        depth = file_path.count('/') + (1 if file_path else 0)
+                        if depth <= self.search_depth:
                             
-                elif item.get('type') == 'blob':  # File in root
-                    file_name = item.get('name', '')
-                    if file_name in target_files:
-                        file_names.append(file_name)
-                    elif file_name.endswith('.csproj') or file_name.endswith('.sln'):
-                        file_names.append(file_name)
-            
-            # Now check each existing directory for our target files
-            for dir_name in existing_dirs:
-                try:
-                    self._rate_limit_wait()
-                    dir_tree = project_obj.repository_tree(path=dir_name, get_all=True, recursive=False)
-                    
-                    for item in dir_tree:
-                        if item.get('type') == 'blob':
-                            file_name = item.get('name', '')
+                            # Check if it's a target file
                             if file_name in target_files:
-                                file_names.append(f"{dir_name}/{file_name}")
+                                file_names.append(file_path)
                             elif file_name.endswith('.csproj') or file_name.endswith('.sln'):
-                                file_names.append(f"{dir_name}/{file_name}")
-                        elif item.get('type') == 'tree':
-                            # For .NET projects, also check subdirectories (2nd level) for .csproj files
-                            subdir_name = item.get('name', '')
-                            try:
-                                self._rate_limit_wait()
-                                subdir_tree = project_obj.repository_tree(path=f"{dir_name}/{subdir_name}", get_all=True, recursive=False)
-                                
-                                for subitem in subdir_tree:
-                                    if subitem.get('type') == 'blob':
-                                        subfile_name = subitem.get('name', '')
-                                        if subfile_name in target_files:
-                                            file_names.append(f"{dir_name}/{subdir_name}/{subfile_name}")
-                                        elif subfile_name.endswith('.csproj') or subfile_name.endswith('.sln'):
-                                            file_names.append(f"{dir_name}/{subdir_name}/{subfile_name}")
-                            except Exception:
-                                # If we can't access this subdirectory, continue
-                                continue
-                except Exception:
-                    # If we can't access this directory, continue with others
-                    continue
+                                file_names.append(file_path)
             
                     
         except Exception:
-            # If shallow tree fails, fall back to checking just root level files
+            # If recursive tree fails, fall back to checking just root level files
             try:
                 # Get branch names to try
                 branch_names = ['main', 'master']
