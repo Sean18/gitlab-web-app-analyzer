@@ -23,15 +23,21 @@ import click
 import gitlab
 import requests
 from dateutil.parser import parse as parse_date
+from gitlab.exceptions import GitlabError
 
 
 class GitLabAnalyzer:
     """Main analyzer class for GitLab repositories"""
     
-    def __init__(self, gitlab_url: str, token: Optional[str] = None, rate_limit: float = 2.0):
+    def __init__(self, gitlab_url: str, token: Optional[str] = None, rate_limit: float = 2.0, debug: bool = False, search_depth: int = 2):
         self.gitlab_url = gitlab_url
         self.rate_limit = rate_limit
         self.last_request_time = 0
+        self.debug = debug
+        self.api_call_count = 0
+        self.total_wait_time = 0
+        self.no_rate_limit = False
+        self.search_depth = search_depth  # Maximum directory depth to search
         
         # Initialize GitLab client
         if not token:
@@ -53,15 +59,103 @@ class GitLabAnalyzer:
         """Enforce rate limiting between API requests"""
         if skip_if_cached:
             return  # Skip rate limiting for cached operations
+        
+        # For testing: allow disabling rate limiting
+        if self.no_rate_limit:
+            self.api_call_count += 1
+            return
             
         current_time = time.time()
         time_since_last = current_time - self.last_request_time
         min_interval = 1.0 / self.rate_limit
         
         if time_since_last < min_interval:
-            time.sleep(min_interval - time_since_last)
+            wait_time = min_interval - time_since_last
+            if self.debug:
+                click.echo(f"Rate limiting: waiting {wait_time:.3f}s (target: {min_interval:.3f}s interval)")
+            time.sleep(wait_time)
+            self.total_wait_time += wait_time
         
         self.last_request_time = time.time()
+        self.api_call_count += 1
+    
+    def _api_call_with_retry(self, api_call, max_retries=3):
+        """Execute API call with retry logic for rate limit errors"""
+        for attempt in range(max_retries + 1):
+            try:
+                result = api_call()
+                
+                # Check for rate limit headers if available
+                if hasattr(result, '_raw') and hasattr(result._raw, 'headers'):
+                    remaining = result._raw.headers.get('X-RateLimit-Remaining')
+                    if remaining and int(remaining) < 100:
+                        click.echo(f"Warning: Rate limit approaching - {remaining} requests remaining")
+                
+                return result
+            except GitlabError as e:
+                if hasattr(e, 'response_code') and e.response_code in [429, 503]:
+                    if attempt < max_retries:
+                        # Exponential backoff: 1s, 2s, 4s
+                        wait_time = 2 ** attempt
+                        click.echo(f"Rate limit hit, waiting {wait_time}s before retry {attempt + 1}/{max_retries}")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        click.echo(f"Rate limit exceeded after {max_retries} retries")
+                        raise
+                else:
+                    # Non-rate-limit error, re-raise immediately
+                    raise
+            except Exception as e:
+                # Network or other errors - only retry once
+                if attempt == 0:
+                    time.sleep(1)
+                    continue
+                else:
+                    raise
+    
+    def _get_directories_to_search(self, project_obj: Any, max_depth: int) -> List[str]:
+        """Get directories to search up to specified depth"""
+        directories = ['']  # Always include root directory
+        
+        try:
+            # Get shallow tree to see what directories exist
+            self._rate_limit_wait()
+            tree = self._api_call_with_retry(
+                lambda: project_obj.repository_tree(get_all=True, recursive=False)
+            )
+            
+            if not tree:
+                return directories
+            
+            # Add first-level directories
+            first_level_dirs = []
+            for item in tree:
+                if item.get('type') == 'tree':  # Directory
+                    dir_name = item.get('name', '')
+                    directories.append(dir_name)
+                    first_level_dirs.append(dir_name)
+            
+            # If max_depth > 1, get second-level directories
+            if max_depth > 1:
+                for dir_name in first_level_dirs:
+                    try:
+                        self._rate_limit_wait()
+                        subtree = project_obj.repository_tree(path=dir_name, get_all=True, recursive=False)
+                        
+                        for item in subtree:
+                            if item.get('type') == 'tree':
+                                subdir_name = item.get('name', '')
+                                directories.append(f"{dir_name}/{subdir_name}")
+                    except Exception:
+                        # Skip if we can't access this directory
+                        continue
+            
+            return directories
+            
+        except Exception:
+            # If we can't get directory structure, just return root
+            return ['']
     
     def get_repositories(self, name_filter: Optional[str] = None) -> List[Any]:
         """Get list of repositories with optional name filtering"""
@@ -70,7 +164,11 @@ class GitLabAnalyzer:
             self._rate_limit_wait()
             click.echo("Making API request...")
             # Get projects owned by or accessible to the authenticated user
-            projects = self.gl.projects.list(membership=True, per_page=100)
+            projects = self._api_call_with_retry(
+                lambda: self.gl.projects.list(membership=True, per_page=100)
+            )
+            if not projects:
+                projects = []
             click.echo(f"Retrieved {len(projects)} projects from API")
             
             if name_filter:
@@ -98,8 +196,12 @@ class GitLabAnalyzer:
         for branch_name in branch_names:
             try:
                 self._rate_limit_wait()
-                file_info = project_obj.files.get(file_path, ref=branch_name)
-                return file_info.decode().decode('utf-8')
+                file_info = self._api_call_with_retry(
+                    lambda: project_obj.files.get(file_path, ref=branch_name)
+                )
+                if file_info:
+                    return file_info.decode().decode('utf-8')
+                return None
             except:
                 continue
         
@@ -109,36 +211,30 @@ class GitLabAnalyzer:
         """Efficiently find relevant web app files using targeted search instead of full recursive scan"""
         file_names = []
         
-        # Define the files we're looking for
+        # Define the files we're looking for (enhanced with patterns from GitHub analysis)
         target_files = [
             'package.json', 'requirements.txt', 'pyproject.toml', 'pom.xml', 'build.gradle',
             'go.mod', 'main.go', 'composer.json', 'index.php', 'web.config', 'Dockerfile',
-            'serverless.yml', 'host.json', 'local.settings.json'
+            'serverless.yml', 'host.json', 'local.settings.json', 'packages.config',
+            'aws-lambda-tools-defaults.json', 'template.yaml', 'template.yml',
+            # Enhanced patterns from GitHub analysis
+            'Global.asax', 'Global.asax.cs', 'Startup.cs', 'Program.cs',
+            'appsettings.json', 'launchSettings.json', '_Host.cshtml', 'App.razor',
+            'RouteConfig.cs', 'WebApiConfig.cs', 'BundleConfig.cs', 'FilterConfig.cs'
         ]
         
-        # Define common subdirectory patterns where web app files are typically found
-        search_paths = [
-            '',  # Root directory
-            'api', 'backend', 'server', 'src', 'app', 'web', 'frontend', 'client', 'ui',
-            'java-api', 'node-api', 'python-api', 'web-app', 'webapp', 'website',
-            'services', 'microservices', 'functions', 'lambda',
-            # Go specific paths
-            'cmd', 'cmd/server', 'cmd/main', 'cmd/api',
-            # .NET specific paths for enterprise projects
-            'src/Presentation', 'src/Web', 'src/WebApi', 'src/Application',
-            'Presentation', 'Web', 'WebApi', 'Application',
-            # Sample/example directories (common in framework repositories)
-            'example', 'examples', 'sample', 'samples', 'demo', 'demos',
-            'samples/springboot3/pet-store', 'samples/spring', 'samples/jersey',
-            # Spring Guide directories (common in official Spring guides)
-            'complete', 'initial'
-        ]
+        # Use configurable search depth instead of hardcoded paths
+        directories_to_search = self._get_directories_to_search(project_obj, self.search_depth)
         
         
         try:
             # First, get a shallow tree to see what directories exist (much faster)
-            self._rate_limit_wait(skip_if_cached=True)
-            shallow_tree = project_obj.repository_tree(get_all=True, recursive=False)
+            self._rate_limit_wait()
+            shallow_tree = self._api_call_with_retry(
+                lambda: project_obj.repository_tree(get_all=True, recursive=False)
+            )
+            if not shallow_tree:
+                shallow_tree = []
             
             # Find directories that match our search patterns
             existing_dirs = set()
@@ -165,7 +261,7 @@ class GitLabAnalyzer:
             # Now check each existing directory for our target files
             for dir_name in existing_dirs:
                 try:
-                    self._rate_limit_wait(skip_if_cached=True)
+                    self._rate_limit_wait()
                     dir_tree = project_obj.repository_tree(path=dir_name, get_all=True, recursive=False)
                     
                     for item in dir_tree:
@@ -179,7 +275,7 @@ class GitLabAnalyzer:
                             # For .NET projects, also check subdirectories (2nd level) for .csproj files
                             subdir_name = item.get('name', '')
                             try:
-                                self._rate_limit_wait(skip_if_cached=True)
+                                self._rate_limit_wait()
                                 subdir_tree = project_obj.repository_tree(path=f"{dir_name}/{subdir_name}", get_all=True, recursive=False)
                                 
                                 for subitem in subdir_tree:
@@ -196,37 +292,6 @@ class GitLabAnalyzer:
                     # If we can't access this directory, continue with others
                     continue
             
-            # Check multi-level directories (e.g., src/Presentation)
-            for multi_path in multi_level_dirs:
-                try:
-                    self._rate_limit_wait(skip_if_cached=True)
-                    multi_tree = project_obj.repository_tree(path=multi_path, get_all=True, recursive=False)
-                    
-                    for item in multi_tree:
-                        if item.get('type') == 'blob':
-                            file_name = item.get('name', '')
-                            if file_name in target_files:
-                                file_names.append(f"{multi_path}/{file_name}")
-                            elif file_name.endswith('.csproj') or file_name.endswith('.sln'):
-                                file_names.append(f"{multi_path}/{file_name}")
-                        elif item.get('type') == 'tree':
-                            # For enterprise .NET projects, check one more level deeper
-                            subdir_name = item.get('name', '')
-                            try:
-                                self._rate_limit_wait(skip_if_cached=True)
-                                subdir_tree = project_obj.repository_tree(path=f"{multi_path}/{subdir_name}", get_all=True, recursive=False)
-                                
-                                for subitem in subdir_tree:
-                                    if subitem.get('type') == 'blob':
-                                        subfile_name = subitem.get('name', '')
-                                        if subfile_name in target_files:
-                                            file_names.append(f"{multi_path}/{subdir_name}/{subfile_name}")
-                                        elif subfile_name.endswith('.csproj') or subfile_name.endswith('.sln'):
-                                            file_names.append(f"{multi_path}/{subdir_name}/{subfile_name}")
-                            except Exception:
-                                continue
-                except Exception:
-                    continue
                     
         except Exception:
             # If shallow tree fails, fall back to checking just root level files
@@ -258,8 +323,17 @@ class GitLabAnalyzer:
     def analyze_repository(self, project: Any) -> Dict[str, Any]:
         """Analyze a single repository for web app characteristics"""
         try:
+            repo_start_time = time.time()
+            
             self._rate_limit_wait()
-            full_project = self.gl.projects.get(project.id)
+            api_start_time = time.time()
+            full_project = self._api_call_with_retry(
+                lambda: self.gl.projects.get(project.id)
+            )
+            api_time = time.time() - api_start_time
+            
+            if self.debug:
+                click.echo(f"Repository '{project.name}': Project API call took {api_time:.3f}s")
             
             result = {
                 'name': project.name,
@@ -278,25 +352,42 @@ class GitLabAnalyzer:
             }
             
             # Get basic project info
-            result['date_created'] = full_project.created_at.split('T')[0] if full_project.created_at else ''
+            result['date_created'] = full_project.created_at.split('T')[0] if full_project and full_project.created_at else ''
             
             # Repository size removed for performance (was heavy API call)
             
             # Get languages
             try:
-                self._rate_limit_wait()
-                languages = full_project.languages()
-                if languages:
-                    lang_list = [f"{lang}: {count}%" for lang, count in sorted(languages.items(), key=lambda x: x[1], reverse=True)]
-                    result['languages'] = ', '.join(lang_list)
-            except:
+                if full_project:
+                    self._rate_limit_wait()
+                    lang_start_time = time.time()
+                    languages = self._api_call_with_retry(
+                        lambda: full_project.languages()
+                    )
+                    lang_time = time.time() - lang_start_time
+                    
+                    if self.debug:
+                        click.echo(f"Repository '{project.name}': Languages API call took {lang_time:.3f}s")
+                    
+                    if languages:
+                        lang_list = [f"{lang}: {count}%" for lang, count in sorted(languages.items(), key=lambda x: x[1], reverse=True)]
+                        result['languages'] = ', '.join(lang_list)
+            except Exception:
                 pass
             
             # Commit analysis removed for performance (was heavy API call)
             
             # Analyze for web app characteristics using cached project object
+            analysis_start_time = time.time()
             web_analysis = self._analyze_web_app_type(full_project)
+            analysis_time = time.time() - analysis_start_time
             result.update(web_analysis)
+            
+            repo_total_time = time.time() - repo_start_time
+            
+            if self.debug:
+                click.echo(f"Repository '{project.name}': Web analysis took {analysis_time:.3f}s")
+                click.echo(f"Repository '{project.name}': Total time {repo_total_time:.3f}s")
             
             return result
             
@@ -416,8 +507,8 @@ class GitLabAnalyzer:
                         evidence.append(f'Found {name} in requirements.txt')
                         break  # Found framework, stop checking
         
-        # Early termination if we have high confidence detection AND no need for frontend checking
-        if confidence_score >= 30 and not package_json_files:
+        # Universal early termination for high confidence detections
+        if confidence_score >= 30:
             analysis['confidence'] = 'HIGH'
             analysis['notes'] = '; '.join(evidence)
             return analysis
@@ -485,7 +576,10 @@ class GitLabAnalyzer:
                     analysis['backend_framework'] = framework_detected
                     analysis['package_manager'] = 'Maven'
                     confidence_score += 30
-                    # Don't return here - continue checking for frontend frameworks
+                    evidence.append(f'Found {framework_detected} in pom.xml')
+                    analysis['confidence'] = 'HIGH'
+                    analysis['notes'] = '; '.join(evidence)
+                    return analysis  # Early termination
             
             # Continue checking other pom.xml files for additional frameworks
         
@@ -607,129 +701,358 @@ class GitLabAnalyzer:
                     analysis['package_manager'] = 'Gradle'
                     confidence_score += 30
                     evidence.append(f'Found {framework_detected} in build.gradle')
+                    analysis['confidence'] = 'HIGH'
+                    analysis['notes'] = '; '.join(evidence)
+                    return analysis  # Early termination
         
-        # Check for .NET Core (use existing file list)
+        # Check for .NET projects (use existing file list)
         csproj_files = [f for f in file_names if f.endswith('.csproj')]
         
         for csproj_file in csproj_files:
             csproj_content = self.get_file_content(project_obj, csproj_file)
             if csproj_content:
-                if 'Microsoft.AspNetCore' in csproj_content or 'AspNetCore' in csproj_content:
+                # Priority 1: Check SDK attribute with enhanced Blazor detection
+                if 'Sdk="Microsoft.NET.Sdk.Web"' in csproj_content:
+                    # Check for Blazor WebAssembly packages first (most specific)
+                    webassembly_packages = [
+                        'Microsoft.AspNetCore.Components.WebAssembly',
+                        'Microsoft.AspNetCore.Components.WebAssembly.Build',
+                        'Microsoft.AspNetCore.Components.WebAssembly.Server',
+                        'Microsoft.AspNetCore.Components.WebAssembly.Authentication',
+                        'Microsoft.AspNetCore.Components.WebAssembly.DevServer'
+                    ]
+                    
+                    for package in webassembly_packages:
+                        if package in csproj_content:
+                            analysis['is_web_app'] = 'YES'
+                            analysis['web_app_type'] = '.NET Core'
+                            analysis['backend_framework'] = 'Blazor WebAssembly'
+                            analysis['package_manager'] = 'NuGet'
+                            confidence_score += 35
+                            evidence.append(f'Found {package} package')
+                            analysis['confidence'] = 'HIGH'
+                            analysis['notes'] = '; '.join(evidence)
+                            return analysis  # Early termination
+                    
+                    # Check for Blazor Server package reference (Components without WebAssembly)
+                    if ('Microsoft.AspNetCore.Components' in csproj_content and
+                        'Microsoft.AspNetCore.Components.WebAssembly' not in csproj_content):
+                        analysis['is_web_app'] = 'YES'
+                        analysis['web_app_type'] = '.NET Core'
+                        analysis['backend_framework'] = 'Blazor Server'
+                        analysis['package_manager'] = 'NuGet'
+                        confidence_score += 35
+                        evidence.append('Found Blazor Server components in Web SDK')
+                        analysis['confidence'] = 'HIGH'
+                        analysis['notes'] = '; '.join(evidence)
+                        return analysis  # Early termination
+                    
+                    # Enhanced check: Look for Blazor Server configuration in Startup.cs
+                    startup_files = [f for f in file_names if f.endswith('Startup.cs')]
+                    for startup_file in startup_files:
+                        startup_content = self.get_file_content(project_obj, startup_file)
+                        if startup_content and ('AddServerSideBlazor' in startup_content or 'MapBlazorHub' in startup_content):
+                            analysis['is_web_app'] = 'YES'
+                            analysis['web_app_type'] = '.NET Core'
+                            analysis['backend_framework'] = 'Blazor Server'
+                            analysis['package_manager'] = 'NuGet'
+                            confidence_score += 35
+                            evidence.append('Found Blazor Server configuration in Startup.cs')
+                            analysis['confidence'] = 'HIGH'
+                            analysis['notes'] = '; '.join(evidence)
+                            return analysis  # Early termination
+                    
+                    # Enhanced check: Look for Blazor Server markup in _Host.cshtml
+                    host_files = [f for f in file_names if f.endswith('_Host.cshtml')]
+                    for host_file in host_files:
+                        host_content = self.get_file_content(project_obj, host_file)
+                        if host_content and ('blazor.server.js' in host_content or 'ServerPrerendered' in host_content):
+                            analysis['is_web_app'] = 'YES'
+                            analysis['web_app_type'] = '.NET Core'
+                            analysis['backend_framework'] = 'Blazor Server'
+                            analysis['package_manager'] = 'NuGet'
+                            confidence_score += 35
+                            evidence.append('Found Blazor Server markup in _Host.cshtml')
+                            analysis['confidence'] = 'HIGH'
+                            analysis['notes'] = '; '.join(evidence)
+                            return analysis  # Early termination
+                    
+                    # Default to ASP.NET Core if no Blazor patterns found
                     analysis['is_web_app'] = 'YES'
                     analysis['web_app_type'] = '.NET Core'
                     analysis['backend_framework'] = 'ASP.NET Core'
                     analysis['package_manager'] = 'NuGet'
-                    confidence_score += 30
-                    evidence.append('Found ASP.NET Core in .csproj')
-                    break
-                elif 'System.Web' in csproj_content:
+                    confidence_score += 35
+                    evidence.append('Found Web SDK in .csproj')
+                    analysis['confidence'] = 'HIGH'
+                    analysis['notes'] = '; '.join(evidence)
+                    return analysis  # Early termination
+                
+                # Priority 2: Check Blazor SDK attributes
+                elif 'Sdk="Microsoft.NET.Sdk.BlazorWebAssembly"' in csproj_content:
                     analysis['is_web_app'] = 'YES'
-                    analysis['web_app_type'] = '.NET Framework'
-                    analysis['backend_framework'] = 'ASP.NET'
+                    analysis['web_app_type'] = '.NET Core'
+                    analysis['backend_framework'] = 'Blazor WebAssembly'
+                    analysis['package_manager'] = 'NuGet'
+                    confidence_score += 35
+                    evidence.append('Found Blazor WebAssembly SDK in .csproj')
+                    analysis['confidence'] = 'HIGH'
+                    analysis['notes'] = '; '.join(evidence)
+                    return analysis  # Early termination
+                
+                # Priority 2c: Enhanced Blazor WebAssembly detection
+                # Check for WebAssembly-specific package patterns
+                webassembly_packages = [
+                    'Microsoft.AspNetCore.Components.WebAssembly',
+                    'Microsoft.AspNetCore.Components.WebAssembly.Build',
+                    'Microsoft.AspNetCore.Components.WebAssembly.Server',
+                    'Microsoft.AspNetCore.Components.WebAssembly.Authentication',
+                    'Microsoft.AspNetCore.Components.WebAssembly.DevServer'
+                ]
+                
+                webassembly_found = False
+                webassembly_evidence = ''
+                for package in webassembly_packages:
+                    if package in csproj_content:
+                        webassembly_found = True
+                        webassembly_evidence = f'Found {package} package'
+                        break
+                
+                if webassembly_found:
+                    analysis['is_web_app'] = 'YES'
+                    analysis['web_app_type'] = '.NET Core'
+                    analysis['backend_framework'] = 'Blazor WebAssembly'
+                    analysis['package_manager'] = 'NuGet'
+                    confidence_score += 35
+                    evidence.append(webassembly_evidence)
+                    analysis['confidence'] = 'HIGH'
+                    analysis['notes'] = '; '.join(evidence)
+                    return analysis  # Early termination
+                
+                # Priority 3: Enhanced serverless .NET detection
+                # Check for AWS Lambda-specific packages
+                lambda_packages = [
+                    'Amazon.Lambda.Core',
+                    'Amazon.Lambda.APIGatewayEvents',
+                    'Amazon.Lambda.RuntimeSupport',
+                    'Amazon.Lambda.AspNetCore.Server.Hosting',
+                    'Amazon.Lambda.Serialization.SystemTextJson'
+                ]
+                
+                lambda_found = False
+                lambda_evidence = ''
+                for package in lambda_packages:
+                    if package in csproj_content:
+                        lambda_found = True
+                        lambda_evidence = f'Found {package} package'
+                        break
+                
+                # Check for AWS Lambda project type
+                if not lambda_found and '<AWSProjectType>Lambda</AWSProjectType>' in csproj_content:
+                    lambda_found = True
+                    lambda_evidence = 'Found AWS Lambda project type'
+                
+                # Check for aws-lambda-tools-defaults.json
+                if not lambda_found:
+                    lambda_config_files = [f for f in file_names if f.endswith('aws-lambda-tools-defaults.json')]
+                    if lambda_config_files:
+                        lambda_found = True
+                        lambda_evidence = 'Found AWS Lambda tools configuration'
+                
+                # Check for SAM template files
+                if not lambda_found:
+                    sam_files = [f for f in file_names if f.endswith('template.yaml') or f.endswith('template.yml')]
+                    for sam_file in sam_files:
+                        sam_content = self.get_file_content(project_obj, sam_file)
+                        if sam_content and 'AWS::Serverless::Function' in sam_content:
+                            lambda_found = True
+                            lambda_evidence = 'Found AWS SAM template'
+                            break
+                
+                if lambda_found:
+                    analysis['is_web_app'] = 'YES'
+                    analysis['web_app_type'] = '.NET Core'
+                    analysis['backend_framework'] = 'AWS Lambda .NET'
                     analysis['package_manager'] = 'NuGet'
                     confidence_score += 30
-                    evidence.append('Found ASP.NET Framework in .csproj')
-                    break
+                    evidence.append(lambda_evidence)
+                    analysis['confidence'] = 'HIGH'
+                    analysis['notes'] = '; '.join(evidence)
+                    return analysis  # Early termination
+                
+                # Check for Azure Functions
+                elif ('Microsoft.Azure.Functions' in csproj_content or 
+                      'Microsoft.NET.Sdk.Functions' in csproj_content):
+                    analysis['is_web_app'] = 'YES'
+                    analysis['web_app_type'] = '.NET Core'
+                    analysis['backend_framework'] = 'Azure Functions'
+                    analysis['package_manager'] = 'NuGet'
+                    confidence_score += 30
+                    evidence.append('Found Azure Functions packages in .csproj')
+                    analysis['confidence'] = 'HIGH'
+                    analysis['notes'] = '; '.join(evidence)
+                    return analysis  # Early termination
+                
+                # Priority 4: Check package references (already loaded content)
+                elif 'Microsoft.AspNetCore' in csproj_content or 'AspNetCore' in csproj_content:
+                    # Check for specific patterns to determine framework type
+                    if 'Microsoft.AspNetCore.OpenApi' in csproj_content or 'Swashbuckle' in csproj_content:
+                        framework_name = 'ASP.NET Core Web API'
+                    elif 'Microsoft.AspNetCore.Mvc' in csproj_content:
+                        framework_name = 'ASP.NET Core MVC'
+                    else:
+                        framework_name = 'ASP.NET Core'
+                    
+                    analysis['is_web_app'] = 'YES'
+                    analysis['web_app_type'] = '.NET Core'
+                    analysis['backend_framework'] = framework_name
+                    analysis['package_manager'] = 'NuGet'
+                    confidence_score += 30
+                    evidence.append(f'Found {framework_name} packages in .csproj')
+                    analysis['confidence'] = 'HIGH'
+                    analysis['notes'] = '; '.join(evidence)
+                    return analysis  # Early termination
+                
+                # Priority 4: Check legacy .NET Framework
+                elif 'System.Web' in csproj_content:
+                    # Try to determine specific framework type
+                    if 'System.Web.Mvc' in csproj_content:
+                        framework_name = 'ASP.NET MVC'
+                    elif 'System.Web.Http' in csproj_content:
+                        framework_name = 'ASP.NET Web API'
+                    else:
+                        framework_name = 'ASP.NET'
+                    
+                    analysis['is_web_app'] = 'YES'
+                    analysis['web_app_type'] = '.NET Framework'
+                    analysis['backend_framework'] = framework_name
+                    analysis['package_manager'] = 'NuGet'
+                    confidence_score += 30
+                    evidence.append(f'Found {framework_name} in .csproj')
+                    analysis['confidence'] = 'HIGH'
+                    analysis['notes'] = '; '.join(evidence)
+                    return analysis  # Early termination
         
-        # Check for .NET Solution files (.sln) if no .csproj found
+        # Check for packages.config (legacy .NET Framework package management)
+        packages_config_files = [f for f in file_names if f.endswith('packages.config')]
+        if packages_config_files and not analysis['backend_framework']:
+            for packages_config_path in packages_config_files:
+                packages_config = self.get_file_content(project_obj, packages_config_path)
+                if packages_config:
+                    # Enhanced check for legacy ASP.NET MVC with version detection
+                    if 'Microsoft.AspNet.Mvc' in packages_config:
+                        # Check for MVC 5.x pattern
+                        if 'version="5.' in packages_config:
+                            framework_name = 'ASP.NET MVC 5'
+                            evidence_text = 'Found ASP.NET MVC 5.x in packages.config'
+                        else:
+                            framework_name = 'ASP.NET MVC'
+                            evidence_text = 'Found ASP.NET MVC in packages.config'
+                        
+                        analysis['is_web_app'] = 'YES'
+                        analysis['web_app_type'] = '.NET Framework'
+                        analysis['backend_framework'] = framework_name
+                        analysis['package_manager'] = 'NuGet'
+                        confidence_score += 30
+                        evidence.append(evidence_text)
+                        analysis['confidence'] = 'HIGH'
+                        analysis['notes'] = '; '.join(evidence)
+                        return analysis  # Early termination
+                    
+                    # Check for legacy ASP.NET Web API
+                    elif 'Microsoft.AspNet.WebApi' in packages_config:
+                        analysis['is_web_app'] = 'YES'
+                        analysis['web_app_type'] = '.NET Framework'
+                        analysis['backend_framework'] = 'ASP.NET Web API'
+                        analysis['package_manager'] = 'NuGet'
+                        confidence_score += 30
+                        evidence.append('Found ASP.NET Web API in packages.config')
+                        analysis['confidence'] = 'HIGH'
+                        analysis['notes'] = '; '.join(evidence)
+                        return analysis  # Early termination
+                    
+                    # Check for generic ASP.NET
+                    elif 'Microsoft.AspNet' in packages_config:
+                        analysis['is_web_app'] = 'YES'
+                        analysis['web_app_type'] = '.NET Framework'
+                        analysis['backend_framework'] = 'ASP.NET'
+                        analysis['package_manager'] = 'NuGet'
+                        confidence_score += 25
+                        evidence.append('Found ASP.NET in packages.config')
+                        analysis['confidence'] = 'MEDIUM'
+                        analysis['notes'] = '; '.join(evidence)
+                        return analysis  # Early termination
+        
+        # Enhanced .NET Solution file check (only if no .csproj detection)
         if not analysis['backend_framework']:
             sln_files = [f for f in file_names if f.endswith('.sln')]
-            
-            # If no .sln files found in our targeted search, do a broader search of all first-level directories
-            if not sln_files:
-                try:
-                    self._rate_limit_wait(skip_if_cached=True)
-                    shallow_tree = project_obj.repository_tree(get_all=True, recursive=False)
-                    
-                    for item in shallow_tree:
-                        if item.get('type') == 'tree':  # Directory
-                            dir_name = item.get('name', '')
-                            try:
-                                self._rate_limit_wait(skip_if_cached=True)
-                                dir_tree = project_obj.repository_tree(path=dir_name, get_all=True, recursive=False)
-                                
-                                for dir_item in dir_tree:
-                                    if dir_item.get('type') == 'blob':
-                                        file_name = dir_item.get('name', '')
-                                        if file_name.endswith('.sln'):
-                                            sln_files.append(f"{dir_name}/{file_name}")
-                            except Exception:
-                                continue
-                except Exception:
-                    pass
             
             for sln_file in sln_files:
                 sln_content = self.get_file_content(project_obj, sln_file)
                 if sln_content:
-                    # First check for direct web indicators in the solution file
-                    web_indicators_sln = [
-                        '.Web', '.Website', '.WebApi', '.Mvc', 'AspNet', 'System.Web',
-                        'Microsoft.AspNet', 'Web.csproj', 'Website.csproj'
+                    # Parse solution file to extract .csproj paths
+                    csproj_paths = self._parse_solution_file(sln_content, sln_file)
+                    
+                    # Analyze each .csproj file found in the solution
+                    for csproj_path in csproj_paths:
+                        csproj_content = self.get_file_content(project_obj, csproj_path)
+                        if csproj_content:
+                            # Run the same .csproj analysis logic as above
+                            result = self._analyze_csproj_content(csproj_content, csproj_path, project_obj, file_names, evidence, confidence_score)
+                            if result:
+                                return result
+                    
+                    # Fallback to simple string matching for web indicators if no .csproj found
+                    web_indicators = [
+                        '.Web', '.WebApi', '.Mvc', 'Microsoft.AspNetCore', 
+                        'AspNet', 'System.Web', 'Web.csproj'
                     ]
                     
-                    web_found = any(indicator in sln_content for indicator in web_indicators_sln)
-                    
-                    # If no direct indicators, extract and analyze .csproj files referenced in the solution
-                    if not web_found:
-                        import re
-                        # Extract .csproj file paths from the solution file
-                        csproj_pattern = r'"([^"]*\.csproj)"'
-                        csproj_matches = re.findall(csproj_pattern, sln_content)
-                        
-                        for csproj_match in csproj_matches:
-                            # Convert Windows paths to Unix paths and make them relative to the solution directory
-                            csproj_path = csproj_match.replace('\\', '/')
-                            
-                            # If the .sln file is in a subdirectory, adjust the .csproj path
-                            if '/' in sln_file:
-                                sln_dir = '/'.join(sln_file.split('/')[:-1])
-                                full_csproj_path = f"{sln_dir}/{csproj_path}"
-                            else:
-                                full_csproj_path = csproj_path
-                            
-                            try:
-                                csproj_content = self.get_file_content(project_obj, full_csproj_path)
-                                if csproj_content:
-                                    # Check for web-related content in the .csproj file
-                                    web_indicators_csproj = [
-                                        'Microsoft.AspNetCore', 'System.Web', 'AspNet',
-                                        'System.Web.Mvc', 'System.Web.WebPages',
-                                        'Microsoft.Web.Infrastructure', 'WebApplication',
-                                        'Microsoft.AspNet', 'Web.config', 'Global.asax'
-                                    ]
-                                    
-                                    if any(indicator in csproj_content for indicator in web_indicators_csproj):
-                                        web_found = True
-                                        break
-                            except Exception:
-                                continue
-                    
-                    if web_found:
+                    if any(indicator in sln_content for indicator in web_indicators):
                         analysis['is_web_app'] = 'YES'
+                        analysis['package_manager'] = 'NuGet'
+                        confidence_score += 25
+                        evidence.append(f'Found web indicators in {sln_file}')
                         
-                        # Try to determine if it's .NET Core or Framework based on solution content
+                        # Determine .NET type from solution content
                         if 'Microsoft.AspNetCore' in sln_content or 'netcore' in sln_content.lower():
                             analysis['web_app_type'] = '.NET Core'
                             analysis['backend_framework'] = 'ASP.NET Core'
                         else:
                             analysis['web_app_type'] = '.NET Framework'
                             analysis['backend_framework'] = 'ASP.NET'
-                            
-                        analysis['package_manager'] = 'NuGet'
-                        confidence_score += 25
-                        evidence.append(f'Found web project references in {sln_file}')
-                        break
+                        
+                        analysis['confidence'] = 'MEDIUM'
+                        analysis['notes'] = '; '.join(evidence)
+                        return analysis  # Early termination
         
         # Check for web.config (ASP.NET) (only if it exists and no backend found yet)
-        if 'web.config' in file_names and not analysis['backend_framework']:
-            web_config = self.get_file_content(project_obj, 'web.config')
-            if web_config:
-                analysis['is_web_app'] = 'YES'
-                analysis['web_app_type'] = '.NET Framework'
-                analysis['backend_framework'] = 'ASP.NET'
-                analysis['web_server_os'] = 'Windows'
-                confidence_score += 25
-                evidence.append('Found web.config file')
+        web_config_files = [f for f in file_names if f.endswith('web.config')]
+        if web_config_files and not analysis['backend_framework']:
+            analysis['is_web_app'] = 'YES'
+            analysis['web_app_type'] = '.NET Framework'
+            analysis['backend_framework'] = 'ASP.NET'
+            analysis['web_server_os'] = 'Windows'
+            analysis['package_manager'] = 'NuGet'
+            confidence_score += 25
+            evidence.append(f'Found {web_config_files[0]} file')
+            analysis['confidence'] = 'MEDIUM'
+            analysis['notes'] = '; '.join(evidence)
+            return analysis  # Early termination
+        
+        # Check for Global.asax (ASP.NET) (only if it exists and no backend found yet)
+        global_asax_files = [f for f in file_names if f.endswith('Global.asax') or f.endswith('Global.asax.cs')]
+        if global_asax_files and not analysis['backend_framework']:
+            analysis['is_web_app'] = 'YES'
+            analysis['web_app_type'] = '.NET Framework'
+            analysis['backend_framework'] = 'ASP.NET'
+            analysis['web_server_os'] = 'Windows'
+            analysis['package_manager'] = 'NuGet'
+            confidence_score += 25
+            evidence.append(f'Found {global_asax_files[0]} file')
+            analysis['confidence'] = 'MEDIUM'
+            analysis['notes'] = '; '.join(evidence)
+            return analysis  # Early termination
         
         # Priority 6: Check for remaining lower-confidence indicators
         
@@ -827,14 +1150,189 @@ class GitLabAnalyzer:
         
         return analysis
 
+    def _parse_solution_file(self, sln_content: str, sln_file: str) -> List[str]:
+        """Parse .sln file to extract .csproj file paths"""
+        import re
+        import os
+        
+        csproj_paths = []
+        
+        # Parse Visual Studio solution file format
+        # Look for Project entries like: Project("{...}") = "ProjectName", "path\to\project.csproj", "{...}"
+        project_pattern = r'Project\("[^"]*"\)\s*=\s*"[^"]*",\s*"([^"]*\.csproj)"'
+        matches = re.findall(project_pattern, sln_content)
+        
+        for match in matches:
+            # Convert Windows path separators to Unix
+            csproj_path = match.replace('\\', '/')
+            
+            # Make path relative to solution file location
+            sln_dir = os.path.dirname(sln_file)
+            if sln_dir:
+                full_path = f"{sln_dir}/{csproj_path}"
+            else:
+                full_path = csproj_path
+            
+            csproj_paths.append(full_path)
+        
+        return csproj_paths
+
+    def _analyze_csproj_content(self, csproj_content: str, csproj_path: str, project_obj: Any, file_names: List[str], evidence: List[str], confidence_score: int) -> Optional[Dict[str, Any]]:
+        """Analyze .csproj content and return analysis result if it's a web app"""
+        analysis = {
+            'is_web_app': 'NO',
+            'confidence': 'LOW',
+            'web_app_type': '',
+            'frontend_framework': '',
+            'backend_framework': '',
+            'package_manager': '',
+            'web_server': '',
+            'web_server_os': '',
+            'notes': ''
+        }
+        
+        # Priority 1: Check SDK attribute with enhanced Blazor detection
+        if 'Sdk="Microsoft.NET.Sdk.Web"' in csproj_content:
+            # Check for Blazor WebAssembly packages first (most specific)
+            webassembly_packages = [
+                'Microsoft.AspNetCore.Components.WebAssembly',
+                'Microsoft.AspNetCore.Components.WebAssembly.Build',
+                'Microsoft.AspNetCore.Components.WebAssembly.Server',
+                'Microsoft.AspNetCore.Components.WebAssembly.Authentication',
+                'Microsoft.AspNetCore.Components.WebAssembly.DevServer'
+            ]
+            
+            for package in webassembly_packages:
+                if package in csproj_content:
+                    analysis['is_web_app'] = 'YES'
+                    analysis['web_app_type'] = '.NET Core'
+                    analysis['backend_framework'] = 'Blazor WebAssembly'
+                    analysis['package_manager'] = 'NuGet'
+                    confidence_score += 35
+                    evidence.append(f'Found {package} package in {csproj_path}')
+                    analysis['confidence'] = 'HIGH'
+                    analysis['notes'] = '; '.join(evidence)
+                    return analysis
+            
+            # Check for Blazor Server package reference (Components without WebAssembly)
+            if ('Microsoft.AspNetCore.Components' in csproj_content and
+                'Microsoft.AspNetCore.Components.WebAssembly' not in csproj_content):
+                analysis['is_web_app'] = 'YES'
+                analysis['web_app_type'] = '.NET Core'
+                analysis['backend_framework'] = 'Blazor Server'
+                analysis['package_manager'] = 'NuGet'
+                confidence_score += 35
+                evidence.append(f'Found Blazor Server components in {csproj_path}')
+                analysis['confidence'] = 'HIGH'
+                analysis['notes'] = '; '.join(evidence)
+                return analysis
+            
+            # Enhanced check: Look for Blazor Server configuration in Startup.cs
+            startup_files = [f for f in file_names if f.endswith('Startup.cs')]
+            for startup_file in startup_files:
+                startup_content = self.get_file_content(project_obj, startup_file)
+                if startup_content and ('AddServerSideBlazor' in startup_content or 'MapBlazorHub' in startup_content):
+                    analysis['is_web_app'] = 'YES'
+                    analysis['web_app_type'] = '.NET Core'
+                    analysis['backend_framework'] = 'Blazor Server'
+                    analysis['package_manager'] = 'NuGet'
+                    confidence_score += 35
+                    evidence.append(f'Found Blazor Server configuration in Startup.cs (from {csproj_path})')
+                    analysis['confidence'] = 'HIGH'
+                    analysis['notes'] = '; '.join(evidence)
+                    return analysis
+            
+            # Default to ASP.NET Core if no Blazor patterns found
+            analysis['is_web_app'] = 'YES'
+            analysis['web_app_type'] = '.NET Core'
+            analysis['backend_framework'] = 'ASP.NET Core'
+            analysis['package_manager'] = 'NuGet'
+            confidence_score += 35
+            evidence.append(f'Found Web SDK in {csproj_path}')
+            analysis['confidence'] = 'HIGH'
+            analysis['notes'] = '; '.join(evidence)
+            return analysis
+        
+        # Priority 2: Check Blazor SDK attributes
+        elif 'Sdk="Microsoft.NET.Sdk.BlazorWebAssembly"' in csproj_content:
+            analysis['is_web_app'] = 'YES'
+            analysis['web_app_type'] = '.NET Core'
+            analysis['backend_framework'] = 'Blazor WebAssembly'
+            analysis['package_manager'] = 'NuGet'
+            confidence_score += 35
+            evidence.append(f'Found Blazor WebAssembly SDK in {csproj_path}')
+            analysis['confidence'] = 'HIGH'
+            analysis['notes'] = '; '.join(evidence)
+            return analysis
+        
+        # Priority 3: Check for ASP.NET Core package references
+        elif 'Microsoft.AspNetCore' in csproj_content or 'AspNetCore' in csproj_content:
+            # Check for specific patterns to determine framework type
+            if 'Microsoft.AspNetCore.OpenApi' in csproj_content or 'Swashbuckle' in csproj_content:
+                framework_name = 'ASP.NET Core Web API'
+            elif 'Microsoft.AspNetCore.Mvc' in csproj_content:
+                framework_name = 'ASP.NET Core MVC'
+            else:
+                framework_name = 'ASP.NET Core'
+            
+            analysis['is_web_app'] = 'YES'
+            analysis['web_app_type'] = '.NET Core'
+            analysis['backend_framework'] = framework_name
+            analysis['package_manager'] = 'NuGet'
+            confidence_score += 30
+            evidence.append(f'Found {framework_name} packages in {csproj_path}')
+            analysis['confidence'] = 'HIGH'
+            analysis['notes'] = '; '.join(evidence)
+            return analysis
+        
+        # Priority 4: Check for legacy .NET Framework web patterns
+        elif 'System.Web.Mvc' in csproj_content:
+            analysis['is_web_app'] = 'YES'
+            analysis['web_app_type'] = '.NET Framework'
+            analysis['backend_framework'] = 'ASP.NET MVC'
+            analysis['package_manager'] = 'NuGet'
+            confidence_score += 30
+            evidence.append(f'Found ASP.NET MVC in {csproj_path}')
+            analysis['confidence'] = 'HIGH'
+            analysis['notes'] = '; '.join(evidence)
+            return analysis
+        
+        elif 'System.Web.Http' in csproj_content:
+            analysis['is_web_app'] = 'YES'
+            analysis['web_app_type'] = '.NET Framework'
+            analysis['backend_framework'] = 'ASP.NET Web API'
+            analysis['package_manager'] = 'NuGet'
+            confidence_score += 30
+            evidence.append(f'Found ASP.NET Web API in {csproj_path}')
+            analysis['confidence'] = 'HIGH'
+            analysis['notes'] = '; '.join(evidence)
+            return analysis
+        
+        elif 'System.Web' in csproj_content:
+            analysis['is_web_app'] = 'YES'
+            analysis['web_app_type'] = '.NET Framework'
+            analysis['backend_framework'] = 'ASP.NET'
+            analysis['package_manager'] = 'NuGet'
+            confidence_score += 25
+            evidence.append(f'Found ASP.NET in {csproj_path}')
+            analysis['confidence'] = 'MEDIUM'
+            analysis['notes'] = '; '.join(evidence)
+            return analysis
+        
+        # If no web patterns found, return None
+        return None
+
 
 @click.command()
 @click.option('--gitlab-url', help='GitLab instance URL')
 @click.option('--token', help='Personal access token')
 @click.option('--output', help='Output CSV filename')
 @click.option('--filter', 'name_filter', default=None, help='Repository name filter (default: all repositories)')
-@click.option('--rate-limit', default=5.0, help='Requests per second (default: 5)')
-def main(gitlab_url, token, output, name_filter, rate_limit):
+@click.option('--rate-limit', default=20.0, help='Requests per second (default: 20)')
+@click.option('--debug', is_flag=True, help='Enable debug logging for performance analysis')
+@click.option('--no-rate-limit', is_flag=True, help='Disable rate limiting (for testing)')
+@click.option('--search-depth', default=2, help='Maximum directory depth to search (default: 2)')
+def main(gitlab_url, token, output, name_filter, rate_limit, debug, no_rate_limit, search_depth):
     """GitLab Web App Repository Analyzer"""
     
     # Generate default output filename if not provided
@@ -859,7 +1357,12 @@ def main(gitlab_url, token, output, name_filter, rate_limit):
     
     try:
         # Initialize analyzer
-        analyzer = GitLabAnalyzer(gitlab_url, token, rate_limit)
+        analyzer = GitLabAnalyzer(gitlab_url, token, rate_limit, debug, search_depth)
+        
+        # Set no_rate_limit flag for testing
+        if no_rate_limit:
+            analyzer.no_rate_limit = True
+            click.echo("Rate limiting disabled for testing")
         
         # Get repositories
         click.echo("Fetching repositories...")
@@ -868,10 +1371,14 @@ def main(gitlab_url, token, output, name_filter, rate_limit):
         
         # Analyze repositories
         results = []
+        analysis_start_time = time.time()
+        
         with click.progressbar(repositories, label='Analyzing repositories') as repos:
             for repo in repos:
                 result = analyzer.analyze_repository(repo)
                 results.append(result)
+        
+        analysis_total_time = time.time() - analysis_start_time
         
         # Write CSV output
         click.echo(f"Writing results to {output}...")
@@ -911,6 +1418,16 @@ def main(gitlab_url, token, output, name_filter, rate_limit):
         click.echo(f"Web applications found: {web_apps}")
         click.echo(f"Errors encountered: {errors}")
         click.echo(f"Results saved to: {output}")
+        
+        # Performance summary
+        if debug:
+            click.echo(f"\nPerformance Debug Summary:")
+            click.echo(f"Total API calls: {analyzer.api_call_count}")
+            click.echo(f"Total rate limit wait time: {analyzer.total_wait_time:.1f}s")
+            click.echo(f"Analysis time: {analysis_total_time:.1f}s")
+            click.echo(f"Rate limit overhead: {(analyzer.total_wait_time/analysis_total_time)*100:.1f}%")
+            click.echo(f"Average per repo: {analysis_total_time/len(results):.2f}s")
+            click.echo(f"Expected rate limit interval: {1.0/rate_limit:.3f}s")
         
     except Exception as e:
         raise click.ClickException(f"Analysis failed: {e}")
