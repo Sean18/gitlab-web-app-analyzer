@@ -10,22 +10,23 @@ The script should scale to handle 1000s of repos in a reasonable time.  TARGET: 
 CSV output file should be human readable, and formatted to display well in MS Excel.
 Console output should include progress indicators, and metrics about the scan, but keep it short.  Any debug logging should be removed or disabled by an option.
 
-## Quick Start Commands
-
-### Basic Analysis
-```bash
-python3 gitlab-web-app-analyzer.py --gitlab-url https://gitlab.com --token YOUR_GITLAB_TOKEN
-```
-
-### Test Specific Repository
-```bash
-python3 gitlab-web-app-analyzer.py --gitlab-url https://gitlab.com --token YOUR_GITLAB_TOKEN --filter "repo-name"
-```
+## Testing and Debugging
 
 ### Install Dependencies
 ```bash
 pip3 install -r requirements.txt
 ```
+
+### Testing all repos (no filter)
+```bash
+python3 gitlab-web-app-analyzer.py --gitlab-url https://gitlab.com --token YOUR_GITLAB_TOKEN
+```
+
+### Test Single Repo (Good for debug/test/fix loop)
+```bash
+python3 gitlab-web-app-analyzer.py --gitlab-url https://gitlab.com --token YOUR_GITLAB_TOKEN --filter "repo-name" --output temp-file.csv
+```
+
 
 ## Framework Detection Patterns
 
