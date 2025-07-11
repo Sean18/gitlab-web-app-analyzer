@@ -1,0 +1,2 @@
+Repository Name,Repository URL,Is Web App,Confidence Level,Web App Type,Frontend Framework,Backend Framework,Package Manager,Web Server,Web Server OS,Languages,Date Created,Notes
+test-spring-petclinic,https://gitlab.com/bdmckenna/test-spring-petclinic,YES,HIGH,Java,,Spring Boot,Maven,,,"CSS: 65.7%, Java: 27.86%, HTML: 4.41%, SCSS: 1.87%, Dockerfile: 0.15%",2025-06-30,Found Spring Boot starter-web in pom.xml; Found Spring Boot in pom.xml

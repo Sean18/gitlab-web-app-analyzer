@@ -368,7 +368,7 @@ class GitLabAnalyzer:
                     pkg_data = json.loads(package_json)
                     deps = {**pkg_data.get('dependencies', {}), **pkg_data.get('devDependencies', {})}
                     
-                    # Check for web frameworks
+                    # Check for backend Node.js frameworks
                     node_frameworks = {
                         'express': 'Express',
                         'fastify': 'Fastify', 
@@ -377,14 +377,6 @@ class GitLabAnalyzer:
                         'next': 'Next.js'
                     }
                     
-                    frontend_frameworks = {
-                        'react': 'React',
-                        'vue': 'Vue.js',
-                        '@angular/core': 'Angular'
-                    }
-                    
-                    # Check for backend Node.js frameworks
-                    node_backend_found = False
                     for dep, framework in node_frameworks.items():
                         if dep in deps:
                             analysis['is_web_app'] = 'YES'
@@ -393,26 +385,13 @@ class GitLabAnalyzer:
                             analysis['package_manager'] = 'npm'
                             confidence_score += 30
                             evidence.append(f'Found {framework} in package.json')
-                            node_backend_found = True
-                            break  # Found backend framework, stop checking backend
-                    
-                    # Check for frontend frameworks (independent of backend detection)
-                    for dep, framework in frontend_frameworks.items():
-                        if dep in deps:
-                            if not node_backend_found:
-                                # If only frontend found, still mark as web app
-                                analysis['is_web_app'] = 'YES'
-                                analysis['web_app_type'] = 'Frontend'
-                            analysis['frontend_framework'] = framework
-                            confidence_score += 20
-                            evidence.append(f'Found {framework} frontend framework')
-                    
-                    # Continue to check for additional frameworks instead of early termination
+                            analysis['confidence'] = 'HIGH'
+                            analysis['notes'] = '; '.join(evidence)
+                            return analysis
                             
                 except json.JSONDecodeError:
                     pass
             
-            # Continue checking other package.json files for additional frameworks
         
         # Check for Python web frameworks (only if files exist)
         if 'requirements.txt' in file_names:
@@ -509,8 +488,6 @@ class GitLabAnalyzer:
                     analysis['confidence'] = 'HIGH'
                     analysis['notes'] = '; '.join(evidence)
                     return analysis  # Early termination
-            
-            # Continue checking other pom.xml files for additional frameworks
         
         # Priority 3: Check Go (go.mod - very reliable)
         if 'go.mod' in file_names:
@@ -1042,26 +1019,6 @@ class GitLabAnalyzer:
                 confidence_score += 30
                 evidence.append('Found host.json (Azure Functions)')
         
-        # Check for Docker/web servers (only if files exist)
-        if 'Dockerfile' in file_names:
-            dockerfile = self.get_file_content(project_obj, 'Dockerfile')
-            if dockerfile:
-                if 'nginx' in dockerfile.lower():
-                    analysis['web_server'] = 'Nginx'
-                    confidence_score += 10
-                    evidence.append('Found Nginx in Dockerfile')
-                elif 'apache' in dockerfile.lower():
-                    analysis['web_server'] = 'Apache'
-                    confidence_score += 10
-                    evidence.append('Found Apache in Dockerfile')
-                
-                # Detect OS
-                if 'FROM ubuntu' in dockerfile or 'FROM debian' in dockerfile:
-                    analysis['web_server_os'] = 'Linux'
-                elif 'FROM alpine' in dockerfile:
-                    analysis['web_server_os'] = 'Linux'
-                elif 'FROM windows' in dockerfile:
-                    analysis['web_server_os'] = 'Windows'
         
         # Set confidence level
         if confidence_score >= 30:
