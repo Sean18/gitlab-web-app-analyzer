@@ -180,11 +180,12 @@ class GitLabAnalyzer:
         
         return None
     
-    def _find_relevant_files(self, project_obj: Any) -> List[str]:
-        """Efficiently find relevant web app files using targeted search instead of full recursive scan"""
-        file_names = []
-        
-        # Define the files we're looking for (enhanced with patterns from GitHub analysis)
+    def _get_file_path(self, file_name: str) -> str:
+        """Get the full path for a target file basename"""
+        return self._file_path_map.get(file_name, file_name)
+    
+    def _is_target_file(self, file_name: str) -> bool:
+        """Check if a filename matches our target web app files"""
         target_files = [
             'package.json', 'requirements.txt', 'pyproject.toml', 'pom.xml', 'build.gradle',
             'go.mod', 'main.go', 'composer.json', 'index.php', 'web.config', 'Dockerfile',
@@ -196,58 +197,56 @@ class GitLabAnalyzer:
             'RouteConfig.cs', 'WebApiConfig.cs', 'BundleConfig.cs', 'FilterConfig.cs'
         ]
         
-        # Get root level files only (non-recursive for performance)
-        self._rate_limit_wait()
-        full_tree = self._api_call_with_retry(
-            lambda: project_obj.repository_tree(get_all=True, recursive=False)
-        )
+        return file_name in target_files or file_name.endswith('.csproj') or file_name.endswith('.sln')
+    
+    def _find_relevant_files(self, project_obj: Any) -> List[str]:
+        """Get files at root, level 1, and level 2 using progressive depth search"""
+        found_files = []
+        self._file_path_map = {}  # basename -> full_path mapping for get_file_content()
+        directories_to_search = [""]  # Start with root
         
-        
-        try:
-            # Process all files from the recursive tree in one pass
-            if full_tree:
-                for item in full_tree:
-                    if item.get('type') == 'blob':  # File
-                        file_path = item.get('path', '')
-                        file_name = item.get('name', '')
-                        
-                        # Check depth constraint
-                        depth = file_path.count('/') + (1 if file_path else 0)
-                        if depth <= self.search_depth:
-                            
-                            # Check if it's a target file
-                            if file_name in target_files:
-                                file_names.append(file_path)
-                            elif file_name.endswith('.csproj') or file_name.endswith('.sln'):
-                                file_names.append(file_path)
+        for current_depth in range(3):  # 0=root, 1=level1, 2=level2
+            next_level_dirs = []
             
-                    
-        except Exception:
-            # If recursive tree fails, fall back to checking just root level files
-            try:
-                # Get branch names to try
-                branch_names = ['main', 'master']
-                try:
-                    default_branch = project_obj.default_branch
-                    if default_branch and default_branch not in branch_names:
-                        branch_names.insert(0, default_branch)
-                except:
-                    pass
+            for dir_path in directories_to_search:
+                self._rate_limit_wait()
                 
-                for file_name in target_files:
-                    for branch_name in branch_names:
-                        try:
-                            # Try to access file directly - this is very fast
-                            file_info = project_obj.files.get(file_name, ref=branch_name)
-                            if file_info:
-                                file_names.append(file_name)
-                                break  # Found file, stop trying other branches
-                        except:
-                            continue
-            except Exception:
-                pass
+                try:
+                    # Use GitLab API with path parameter for depth control
+                    query_params: Dict[str, Any] = {'recursive': False}
+                    if dir_path:  # Only add path parameter if not root
+                        query_params['path'] = dir_path
+                    
+                    items = self.gl.http_list(
+                        f'/projects/{project_obj.id}/repository/tree',
+                        query_data=query_params,
+                        get_all=True
+                    )
+                    
+                    for item in items:
+                        if item['type'] == 'blob':  # File
+                            file_name = item['name']
+                            if self._is_target_file(file_name):
+                                # Store basename in found_files for clean checking logic
+                                if file_name not in found_files:  # Avoid duplicates
+                                    found_files.append(file_name)
+                                    # Map basename to full path for get_file_content()
+                                    self._file_path_map[file_name] = item['path']
+                        elif item['type'] == 'tree' and current_depth < 2:  # Directory
+                            next_level_dirs.append(item['path'])
+                            
+                except Exception as e:
+                    if self.debug:
+                        click.echo(f"Debug: Error accessing directory '{dir_path}': {e}")
+                    continue
+            
+            directories_to_search = next_level_dirs
+            if not directories_to_search:  # No more directories to search
+                break
         
-        return file_names
+        return found_files
+    
+
     
     def analyze_repository(self, project: Any) -> Dict[str, Any]:
         """Analyze a single repository for web app characteristics"""
@@ -395,7 +394,7 @@ class GitLabAnalyzer:
         
         # Check for Python web frameworks (only if files exist)
         if 'requirements.txt' in file_names:
-            requirements_txt = self.get_file_content(project_obj, 'requirements.txt')
+            requirements_txt = self.get_file_content(project_obj, self._get_file_path('requirements.txt'))
             if requirements_txt:
                 python_frameworks = {
                     'django': 'Django',
@@ -491,7 +490,7 @@ class GitLabAnalyzer:
         
         # Priority 3: Check Go (go.mod - very reliable)
         if 'go.mod' in file_names:
-            go_mod = self.get_file_content(project_obj, 'go.mod')
+            go_mod = self.get_file_content(project_obj, self._get_file_path('go.mod'))
             if go_mod:
                 go_frameworks = {
                     'gin-gonic/gin': 'Gin',
@@ -520,7 +519,7 @@ class GitLabAnalyzer:
         
         # Priority 4: Check PHP composer (composer.json - very reliable)
         if 'composer.json' in file_names:
-            composer_json = self.get_file_content(project_obj, 'composer.json')
+            composer_json = self.get_file_content(project_obj, self._get_file_path('composer.json'))
             if composer_json:
                 try:
                     composer_data = json.loads(composer_json)
@@ -550,7 +549,7 @@ class GitLabAnalyzer:
         
         # Check for pyproject.toml (only if it exists and no backend found yet)
         if 'pyproject.toml' in file_names and not analysis['backend_framework']:
-            pyproject_toml = self.get_file_content(project_obj, 'pyproject.toml')
+            pyproject_toml = self.get_file_content(project_obj, self._get_file_path('pyproject.toml'))
             if pyproject_toml:
                 python_frameworks = ['django', 'flask', 'fastapi', 'pyramid', 'tornado']
                 for framework in python_frameworks:
@@ -565,7 +564,7 @@ class GitLabAnalyzer:
         
         # Check for Gradle (only if it exists and no backend found yet)
         if 'build.gradle' in file_names and not analysis['backend_framework']:
-            build_gradle = self.get_file_content(project_obj, 'build.gradle')
+            build_gradle = self.get_file_content(project_obj, self._get_file_path('build.gradle'))
             if build_gradle:
                 # Priority-based Java web framework detection for Gradle
                 framework_detected = None
