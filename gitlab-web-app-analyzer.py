@@ -180,9 +180,6 @@ class GitLabAnalyzer:
         
         return None
     
-    def _get_file_path(self, file_name: str) -> str:
-        """Get the full path for a target file basename"""
-        return self._file_path_map.get(file_name, file_name)
     
     def _is_target_file(self, file_name: str) -> bool:
         """Check if a filename matches our target web app files"""
@@ -202,7 +199,6 @@ class GitLabAnalyzer:
     def _find_relevant_files(self, project_obj: Any) -> List[str]:
         """Get files at root, level 1, and level 2 using progressive depth search"""
         found_files = []
-        self._file_path_map = {}  # basename -> full_path mapping for get_file_content()
         directories_to_search = [""]  # Start with root
         
         for current_depth in range(3):  # 0=root, 1=level1, 2=level2
@@ -227,11 +223,8 @@ class GitLabAnalyzer:
                         if item['type'] == 'blob':  # File
                             file_name = item['name']
                             if self._is_target_file(file_name):
-                                # Store basename in found_files for clean checking logic
-                                if file_name not in found_files:  # Avoid duplicates
-                                    found_files.append(file_name)
-                                    # Map basename to full path for get_file_content()
-                                    self._file_path_map[file_name] = item['path']
+                                # Store full path directly in found_files
+                                found_files.append(item['path'])
                         elif item['type'] == 'tree' and current_depth < 2:  # Directory
                             next_level_dirs.append(item['path'])
                             
@@ -360,8 +353,8 @@ class GitLabAnalyzer:
         
         # Check for Node.js (package.json - very common)
         package_json_files = [f for f in file_names if f.endswith('package.json')]
-        for package_json_path in package_json_files:
-            package_json = self.get_file_content(project_obj, package_json_path)
+        for package_json_filename in package_json_files:
+            package_json = self.get_file_content(project_obj, package_json_filename)
             if package_json:
                 try:
                     pkg_data = json.loads(package_json)
@@ -393,26 +386,30 @@ class GitLabAnalyzer:
             
         
         # Check for Python web frameworks (only if files exist)
-        if 'requirements.txt' in file_names:
-            requirements_txt = self.get_file_content(project_obj, self._get_file_path('requirements.txt'))
-            if requirements_txt:
-                python_frameworks = {
-                    'django': 'Django',
-                    'flask': 'Flask',
-                    'fastapi': 'FastAPI',
-                    'pyramid': 'Pyramid',
-                    'tornado': 'Tornado'
-                }
+        requirements_files = [f for f in file_names if f.endswith('requirements.txt')]
+        if requirements_files:
+            for requirements_file in requirements_files:
+                requirements_txt = self.get_file_content(project_obj, requirements_file)
+                if requirements_txt:
+                    python_frameworks = {
+                        'django': 'Django',
+                        'flask': 'Flask',
+                        'fastapi': 'FastAPI',
+                        'pyramid': 'Pyramid',
+                        'tornado': 'Tornado'
+                    }
                 
-                for framework, name in python_frameworks.items():
-                    if framework.lower() in requirements_txt.lower():
-                        analysis['is_web_app'] = 'YES'
-                        analysis['web_app_type'] = 'Python'
-                        analysis['backend_framework'] = name
-                        analysis['package_manager'] = 'pip'
-                        confidence_score += 30
-                        evidence.append(f'Found {name} in requirements.txt')
-                        break  # Found framework, stop checking
+                    for framework, name in python_frameworks.items():
+                        if framework.lower() in requirements_txt.lower():
+                            analysis['is_web_app'] = 'YES'
+                            analysis['web_app_type'] = 'Python'
+                            analysis['backend_framework'] = name
+                            analysis['package_manager'] = 'pip'
+                            confidence_score += 30
+                            evidence.append(f'Found {name} in requirements.txt')
+                            analysis['confidence'] = 'HIGH'
+                            analysis['notes'] = '; '.join(evidence)
+                            return analysis
         
         # Universal early termination for high confidence detections
         if confidence_score >= 30:
@@ -422,8 +419,8 @@ class GitLabAnalyzer:
         
         # Priority 2: Check Java/Maven (pom.xml - very reliable)
         pom_xml_files = [f for f in file_names if f.endswith('pom.xml')]
-        for pom_xml_path in pom_xml_files:
-            pom_xml = self.get_file_content(project_obj, pom_xml_path)
+        for pom_xml_filename in pom_xml_files:
+            pom_xml = self.get_file_content(project_obj, pom_xml_filename)
             if pom_xml:
                 # Priority-based Java web framework detection
                 framework_detected = None
@@ -489,13 +486,15 @@ class GitLabAnalyzer:
                     return analysis  # Early termination
         
         # Priority 3: Check Go (go.mod - very reliable)
-        if 'go.mod' in file_names:
-            go_mod = self.get_file_content(project_obj, self._get_file_path('go.mod'))
-            if go_mod:
-                go_frameworks = {
-                    'gin-gonic/gin': 'Gin',
-                    'labstack/echo': 'Echo',
-                    'gofiber/fiber': 'Fiber',
+        go_mod_files = [f for f in file_names if f.endswith('go.mod')]
+        if go_mod_files:
+            for go_mod_file in go_mod_files:
+                go_mod = self.get_file_content(project_obj, go_mod_file)
+                if go_mod:
+                    go_frameworks = {
+                        'gin-gonic/gin': 'Gin',
+                        'labstack/echo': 'Echo',
+                        'gofiber/fiber': 'Fiber',
                     'gorilla/mux': 'Gorilla Mux',
                     'github.com/micro/go-micro': 'Go Micro',
                     'grpc-ecosystem/grpc-gateway': 'gRPC Gateway',
@@ -503,68 +502,72 @@ class GitLabAnalyzer:
                     'golang.org/x/net': 'Go HTTP',
                     'github.com/aws/aws-lambda-go': 'AWS Lambda Go',
                     'aws/aws-lambda-go': 'AWS Lambda Go'
-                }
-                
-                for framework, name in go_frameworks.items():
-                    if framework in go_mod:
-                        analysis['is_web_app'] = 'YES'
-                        analysis['web_app_type'] = 'Go'
-                        analysis['backend_framework'] = name
-                        analysis['package_manager'] = 'Go Modules'
-                        confidence_score += 30
-                        evidence.append(f'Found {name} in go.mod')
-                        analysis['confidence'] = 'HIGH'
-                        analysis['notes'] = '; '.join(evidence)
-                        return analysis
-        
-        # Priority 4: Check PHP composer (composer.json - very reliable)
-        if 'composer.json' in file_names:
-            composer_json = self.get_file_content(project_obj, self._get_file_path('composer.json'))
-            if composer_json:
-                try:
-                    composer_data = json.loads(composer_json)
-                    deps = composer_data.get('require', {})
-                    
-                    php_frameworks = {
-                        'laravel/framework': 'Laravel',
-                        'symfony/symfony': 'Symfony',
-                        'symfony/framework-bundle': 'Symfony',
-                        'codeigniter/framework': 'CodeIgniter',
-                        'codeigniter4/framework': 'CodeIgniter 4'
                     }
                     
-                    for dep, framework in php_frameworks.items():
-                        if dep in deps:
+                    for framework, name in go_frameworks.items():
+                        if framework in go_mod:
                             analysis['is_web_app'] = 'YES'
-                            analysis['web_app_type'] = 'PHP'
-                            analysis['backend_framework'] = framework
-                            analysis['package_manager'] = 'Composer'
+                            analysis['web_app_type'] = 'Go'
+                            analysis['backend_framework'] = name
+                            analysis['package_manager'] = 'Go Modules'
                             confidence_score += 30
-                            evidence.append(f'Found {framework} in composer.json')
+                            evidence.append(f'Found {name} in go.mod')
                             analysis['confidence'] = 'HIGH'
                             analysis['notes'] = '; '.join(evidence)
                             return analysis
-                except json.JSONDecodeError:
-                    pass
+        
+        # Priority 4: Check PHP composer (composer.json - very reliable)
+        composer_files = [f for f in file_names if f.endswith('composer.json')]
+        if composer_files:
+            for composer_file in composer_files:
+                composer_json = self.get_file_content(project_obj, composer_file)
+                if composer_json:
+                    try:
+                        composer_data = json.loads(composer_json)
+                        deps = composer_data.get('require', {})
+                        
+                        php_frameworks = {
+                            'laravel/framework': 'Laravel',
+                            'symfony/symfony': 'Symfony',
+                            'symfony/framework-bundle': 'Symfony',
+                            'codeigniter/framework': 'CodeIgniter',
+                            'codeigniter4/framework': 'CodeIgniter 4'
+                        }
+                        
+                        for dep, framework in php_frameworks.items():
+                            if dep in deps:
+                                analysis['is_web_app'] = 'YES'
+                                analysis['web_app_type'] = 'PHP'
+                                analysis['backend_framework'] = framework
+                                analysis['package_manager'] = 'Composer'
+                                confidence_score += 30
+                                evidence.append(f'Found {framework} in composer.json')
+                                analysis['confidence'] = 'HIGH'
+                                analysis['notes'] = '; '.join(evidence)
+                                return analysis
+                    except json.JSONDecodeError:
+                        pass
         
         # Check for pyproject.toml (only if it exists and no backend found yet)
-        if 'pyproject.toml' in file_names and not analysis['backend_framework']:
-            pyproject_toml = self.get_file_content(project_obj, self._get_file_path('pyproject.toml'))
-            if pyproject_toml:
-                python_frameworks = ['django', 'flask', 'fastapi', 'pyramid', 'tornado']
-                for framework in python_frameworks:
-                    if framework in pyproject_toml.lower():
-                        analysis['is_web_app'] = 'YES'
-                        analysis['web_app_type'] = 'Python'
-                        analysis['backend_framework'] = framework.title()
-                        analysis['package_manager'] = 'pip'
-                        confidence_score += 25
-                        evidence.append(f'Found {framework} in pyproject.toml')
-                        break
+        pyproject_files = [f for f in file_names if f.endswith('pyproject.toml')]
+        if pyproject_files and not analysis['backend_framework']:
+            for pyproject_file in pyproject_files:
+                pyproject_toml = self.get_file_content(project_obj, pyproject_file)
+                if pyproject_toml:
+                    python_frameworks = ['django', 'flask', 'fastapi', 'pyramid', 'tornado']
+                    for framework in python_frameworks:
+                        if framework in pyproject_toml.lower():
+                            analysis['is_web_app'] = 'YES'
+                            analysis['web_app_type'] = 'Python'
+                            analysis['backend_framework'] = framework.title()
+                            analysis['package_manager'] = 'pip'
+                            confidence_score += 25
+                            evidence.append(f'Found {framework} in pyproject.toml')
+                            break
         
         # Check for Gradle (only if it exists and no backend found yet)
         if 'build.gradle' in file_names and not analysis['backend_framework']:
-            build_gradle = self.get_file_content(project_obj, self._get_file_path('build.gradle'))
+            build_gradle = self.get_file_content(project_obj, 'build.gradle')
             if build_gradle:
                 # Priority-based Java web framework detection for Gradle
                 framework_detected = None
@@ -964,8 +967,8 @@ class GitLabAnalyzer:
         # Check for main.go (only if it exists and no backend found yet)
         main_go_files = [f for f in file_names if f.endswith('main.go')]
         if main_go_files and not analysis['backend_framework']:
-            for main_go_path in main_go_files:
-                main_go = self.get_file_content(project_obj, main_go_path)
+            for main_go_filename in main_go_files:
+                main_go = self.get_file_content(project_obj, main_go_filename)
                 if main_go:
                     # Check for various Go web/service patterns
                     if 'http.ListenAndServe' in main_go:
@@ -987,8 +990,9 @@ class GitLabAnalyzer:
                         analysis['is_web_app'] = 'YES'
                         analysis['web_app_type'] = 'Go'
                         analysis['backend_framework'] = framework
+                        analysis['package_manager'] = 'Go'
                         confidence_score += 25
-                        evidence.append(f'Found {framework} in {main_go_path}')
+                        evidence.append(f'Found {framework} in {main_go_filename}')
                         break
         
         # Check for index.php (only if it exists and no backend found yet)
