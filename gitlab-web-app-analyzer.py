@@ -25,11 +25,14 @@ import requests
 from dateutil.parser import parse as parse_date
 from gitlab.exceptions import GitlabError
 
+# Import performance tracking module
+from performance_tracker import create_performance_tracker
+
 
 class GitLabAnalyzer:
     """Main analyzer class for GitLab repositories"""
     
-    def __init__(self, gitlab_url: str, token: Optional[str] = None, rate_limit: float = 2.0, debug: bool = False, search_depth: int = 2):
+    def __init__(self, gitlab_url: str, token: Optional[str] = None, rate_limit: float = 2.0, debug: bool = False, search_depth: int = 2, enable_performance_tracking: bool = False):
         self.gitlab_url = gitlab_url
         self.rate_limit = rate_limit
         self.last_request_time = 0
@@ -38,6 +41,7 @@ class GitLabAnalyzer:
         self.total_wait_time = 0
         self.no_rate_limit = False
         self.search_depth = search_depth  # Maximum directory depth to search
+        self.performance_tracker = create_performance_tracker(enable_performance_tracking)
         
         # Initialize GitLab client
         if not token:
@@ -79,40 +83,41 @@ class GitLabAnalyzer:
         self.last_request_time = time.time()
         self.api_call_count += 1
     
-    def _api_call_with_retry(self, api_call, max_retries=3):
-        """Execute API call with retry logic for rate limit errors"""
-        for attempt in range(max_retries + 1):
-            try:
-                result = api_call()
-                
-                # Check for rate limit headers if available
-                if hasattr(result, '_raw') and hasattr(result._raw, 'headers'):
-                    remaining = result._raw.headers.get('X-RateLimit-Remaining')
-                    if remaining and int(remaining) < 100:
-                        click.echo(f"Warning: Rate limit approaching - {remaining} requests remaining")
-                
-                return result
-            except GitlabError as e:
-                if hasattr(e, 'response_code') and e.response_code in [429, 503]:
-                    if attempt < max_retries:
-                        # Exponential backoff: 1s, 2s, 4s
-                        wait_time = 2 ** attempt
-                        click.echo(f"Rate limit hit, waiting {wait_time}s before retry {attempt + 1}/{max_retries}")
-                        time.sleep(wait_time)
+    def _api_call_with_retry(self, api_call, max_retries=3, call_type='other'):
+        """Execute API call with retry logic for rate limit errors and performance tracking"""
+        with self.performance_tracker.track_api_call_context(call_type, self.debug):
+            for attempt in range(max_retries + 1):
+                try:
+                    result = api_call()
+                    
+                    # Check for rate limit headers if available
+                    if hasattr(result, '_raw') and hasattr(result._raw, 'headers'):
+                        remaining = result._raw.headers.get('X-RateLimit-Remaining')
+                        if remaining and int(remaining) < 100:
+                            click.echo(f"Warning: Rate limit approaching - {remaining} requests remaining")
+                    
+                    return result
+                except GitlabError as e:
+                    if hasattr(e, 'response_code') and e.response_code in [429, 503]:
+                        if attempt < max_retries:
+                            # Exponential backoff: 1s, 2s, 4s
+                            wait_time = 2 ** attempt
+                            click.echo(f"Rate limit hit, waiting {wait_time}s before retry {attempt + 1}/{max_retries}")
+                            time.sleep(wait_time)
+                            continue
+                        else:
+                            click.echo(f"Rate limit exceeded after {max_retries} retries")
+                            raise
+                    else:
+                        # Non-rate-limit error, re-raise immediately
+                        raise
+                except Exception as e:
+                    # Network or other errors - only retry once
+                    if attempt == 0:
+                        time.sleep(1)
                         continue
                     else:
-                        click.echo(f"Rate limit exceeded after {max_retries} retries")
                         raise
-                else:
-                    # Non-rate-limit error, re-raise immediately
-                    raise
-            except Exception as e:
-                # Network or other errors - only retry once
-                if attempt == 0:
-                    time.sleep(1)
-                    continue
-                else:
-                    raise
     
     def get_repositories(self, name_filter: Optional[str] = None) -> List[Any]:
         """Get list of repositories with optional name filtering"""
@@ -122,7 +127,8 @@ class GitLabAnalyzer:
             click.echo("Making API request...")
             # Get projects owned by or accessible to the authenticated user
             projects = self._api_call_with_retry(
-                lambda: self.gl.projects.list(membership=True, per_page=100)
+                lambda: self.gl.projects.list(membership=True, per_page=100),
+                call_type='project_list'
             )
             if not projects:
                 projects = []
@@ -160,7 +166,8 @@ class GitLabAnalyzer:
                 
                 self._rate_limit_wait()
                 file_info = self._api_call_with_retry(
-                    lambda: project_obj.files.get(file_path, ref=branch_name)
+                    lambda: project_obj.files.get(file_path, ref=branch_name),
+                    call_type='file_content'
                 )
                 
                 if self.debug:
@@ -213,11 +220,13 @@ class GitLabAnalyzer:
                     if dir_path:  # Only add path parameter if not root
                         query_params['path'] = dir_path
                     
-                    items = self.gl.http_list(
-                        f'/projects/{project_obj.id}/repository/tree',
-                        query_data=query_params,
-                        get_all=True
-                    )
+                    # Use context manager for file tree API call tracking
+                    with self.performance_tracker.track_api_call_context('file_tree', self.debug):
+                        items = self.gl.http_list(
+                            f'/projects/{project_obj.id}/repository/tree',
+                            query_data=query_params,
+                            get_all=True
+                        )
                     
                     for item in items:
                         if item['type'] == 'blob':  # File
@@ -243,91 +252,79 @@ class GitLabAnalyzer:
     
     def analyze_repository(self, project: Any) -> Dict[str, Any]:
         """Analyze a single repository for web app characteristics"""
-        try:
-            repo_start_time = time.time()
-            
-            self._rate_limit_wait()
-            api_start_time = time.time()
-            full_project = self._api_call_with_retry(
-                lambda: self.gl.projects.get(project.id)
-            )
-            api_time = time.time() - api_start_time
-            
-            if self.debug:
-                click.echo(f"Repository '{project.name}': Project API call took {api_time:.3f}s")
-            
-            result = {
-                'name': project.name,
-                'url': project.web_url,
-                'is_web_app': 'UNKNOWN',
-                'confidence': 'LOW',
-                'web_app_type': '',
-                'frontend_framework': '',
-                'backend_framework': '',
-                'package_manager': '',
-                'web_server': '',
-                'web_server_os': '',
-                'languages': '',
-                'date_created': '',
-                'notes': ''
-            }
-            
-            # Get basic project info
-            result['date_created'] = full_project.created_at.split('T')[0] if full_project and full_project.created_at else ''
-            
-            # Repository size removed for performance (was heavy API call)
-            
-            # Get languages
+        with self.performance_tracker.track_repository(project.name) as repo_tracker:
             try:
-                if full_project:
-                    self._rate_limit_wait()
-                    lang_start_time = time.time()
-                    languages = self._api_call_with_retry(
-                        lambda: full_project.languages()
-                    )
-                    lang_time = time.time() - lang_start_time
-                    
-                    if self.debug:
-                        click.echo(f"Repository '{project.name}': Languages API call took {lang_time:.3f}s")
-                    
-                    if languages:
-                        lang_list = [f"{lang}: {count}%" for lang, count in sorted(languages.items(), key=lambda x: x[1], reverse=True)]
-                        result['languages'] = ', '.join(lang_list)
-            except Exception:
-                pass
-            
-            # Commit analysis removed for performance (was heavy API call)
-            
-            # Analyze for web app characteristics using cached project object
-            analysis_start_time = time.time()
-            web_analysis = self._analyze_web_app_type(full_project)
-            analysis_time = time.time() - analysis_start_time
-            result.update(web_analysis)
-            
-            repo_total_time = time.time() - repo_start_time
-            
-            if self.debug:
-                click.echo(f"Repository '{project.name}': Web analysis took {analysis_time:.3f}s")
-                click.echo(f"Repository '{project.name}': Total time {repo_total_time:.3f}s")
-            
-            return result
-            
-        except Exception as e:
-            return {
-                'name': project.name if hasattr(project, 'name') else 'Unknown',
-                'url': project.web_url if hasattr(project, 'web_url') else '',
-                'is_web_app': 'ERROR',
-                'confidence': 'LOW',
-                'web_app_type': '',
-                'frontend_framework': '',
-                'backend_framework': '',
-                'package_manager': '',
-                'web_server': '',
-                'web_server_os': '',
-                'languages': '',
-                'date_created': '',
-                'notes': f'Analysis error: {str(e)}'
-            }
+                self._rate_limit_wait()
+                full_project = self._api_call_with_retry(
+                    lambda: self.gl.projects.get(project.id),
+                    call_type='project_info'
+                )
+                
+                result = {
+                    'name': project.name,
+                    'url': project.web_url,
+                    'is_web_app': 'UNKNOWN',
+                    'confidence': 'LOW',
+                    'web_app_type': '',
+                    'frontend_framework': '',
+                    'backend_framework': '',
+                    'package_manager': '',
+                    'web_server': '',
+                    'web_server_os': '',
+                    'languages': '',
+                    'date_created': '',
+                    'notes': ''
+                }
+                
+                # Get basic project info
+                result['date_created'] = full_project.created_at.split('T')[0] if full_project and full_project.created_at else ''
+                
+                # Get languages
+                try:
+                    if full_project:
+                        self._rate_limit_wait()
+                        languages = self._api_call_with_retry(
+                            lambda: full_project.languages(),
+                            call_type='languages'
+                        )
+                        
+                        if languages:
+                            lang_list = [f"{lang}: {count}%" for lang, count in sorted(languages.items(), key=lambda x: x[1], reverse=True)]
+                            result['languages'] = ', '.join(lang_list)
+                except Exception:
+                    pass
+                
+                # Analyze for web app characteristics using cached project object
+                web_analysis = self._analyze_web_app_type(full_project)
+                result.update(web_analysis)
+                
+                # Finish performance tracking for this repository
+                app_type = result.get('web_app_type', 'Unknown')
+                if result.get('is_web_app') == 'NO':
+                    app_type = 'Non-Web-App'
+                elif result.get('is_web_app') == 'ERROR':
+                    app_type = 'Error'
+                repo_tracker.finish(app_type)
+                
+                return result
+                
+            except Exception as e:
+                repo_tracker.finish('Error')
+                return {
+                    'name': project.name if hasattr(project, 'name') else 'Unknown',
+                    'url': project.web_url if hasattr(project, 'web_url') else '',
+                    'is_web_app': 'ERROR',
+                    'confidence': 'LOW',
+                    'web_app_type': '',
+                    'frontend_framework': '',
+                    'backend_framework': '',
+                    'package_manager': '',
+                    'web_server': '',
+                    'web_server_os': '',
+                    'languages': '',
+                    'date_created': '',
+                    'notes': f'Analysis error: {str(e)}'
+                }
     
     def _analyze_web_app_type(self, project_obj: Any) -> Dict[str, Any]:
         """Analyze repository to determine if it's a web app and what type"""
@@ -1245,8 +1242,8 @@ def main(gitlab_url, token, output, name_filter, rate_limit, debug, no_rate_limi
     click.echo(f"Rate limit: {rate_limit} requests/second")
     
     try:
-        # Initialize analyzer
-        analyzer = GitLabAnalyzer(gitlab_url, token, rate_limit, debug, search_depth)
+        # Initialize analyzer (performance tracking disabled by default)
+        analyzer = GitLabAnalyzer(gitlab_url, token, rate_limit, debug, search_depth, enable_performance_tracking=False)
         
         # Set no_rate_limit flag for testing
         if no_rate_limit:
