@@ -139,6 +139,9 @@ class GitLabAnalyzer:
     
     def get_file_content(self, project_obj: Any, file_path: str) -> Optional[str]:
         """Get content of a file from repository using cached project object"""
+        if self.debug:
+            get_file_start = time.time()
+        
         # Try common branch names and the project's default branch
         branch_names = ['main', 'master']
         
@@ -152,13 +155,26 @@ class GitLabAnalyzer:
         
         for branch_name in branch_names:
             try:
+                if self.debug:
+                    api_call_start = time.time()
+                
                 self._rate_limit_wait()
                 file_info = self._api_call_with_retry(
                     lambda: project_obj.files.get(file_path, ref=branch_name)
                 )
+                
+                if self.debug:
+                    api_call_time = time.time() - api_call_start
+                
                 if file_info:
-                    return file_info.decode().decode('utf-8')
-                return None
+                    content = file_info.decode().decode('utf-8')
+                    if self.debug:
+                        total_time = time.time() - get_file_start
+                        content_size = len(content)
+                        click.echo(f"DEBUG: get_file_content('{file_path}') -> SUCCESS in {total_time:.3f}s (size: {content_size} chars, API: {api_call_time:.3f}s)")
+                    return content
+                else:
+                    return None
             except:
                 continue
         
@@ -180,10 +196,10 @@ class GitLabAnalyzer:
             'RouteConfig.cs', 'WebApiConfig.cs', 'BundleConfig.cs', 'FilterConfig.cs'
         ]
         
-        # Get entire repository tree in one API call using recursive=True
+        # Get root level files only (non-recursive for performance)
         self._rate_limit_wait()
         full_tree = self._api_call_with_retry(
-            lambda: project_obj.repository_tree(get_all=True, recursive=True)
+            lambda: project_obj.repository_tree(get_all=True, recursive=False)
         )
         
         
