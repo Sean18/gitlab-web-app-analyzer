@@ -43,6 +43,10 @@ class GitLabAnalyzer:
         self.max_search_depth = max_search_depth  # Maximum directory depth to search
         self.performance_tracker = create_performance_tracker(enable_performance_tracking)
         
+        # Directory tracking for progressive level search optimization
+        self.current_level_dirs = []  # Directories to search at current level
+        self.next_level_dirs = []     # Directories discovered for next level
+        
         # Initialize GitLab client
         if not token:
             raise click.ClickException("GitLab token is required. Provide via --token or GITLAB_TOKEN environment variable")
@@ -204,52 +208,14 @@ class GitLabAnalyzer:
         return file_name in target_files or file_name.endswith('.csproj') or file_name.endswith('.sln')
     
     def _find_relevant_files_at_level(self, project_obj: Any, level: int) -> List[str]:
-        """Get files at specific directory level only"""
+        """Get files at specific directory level using optimized progressive search"""
+        """Performance Note:  We do this because getting the full tree (recursive) is too slow."""
         found_files = []
         
-        if level == 0:
-            # Root level - search root directory only
-            directories_to_search = [""]
-        else:
-            # Higher levels - need to get directories from previous levels
-            directories_to_search = []
-            temp_dirs = [""]  # Start with root
-            
-            # Build up to the target level
-            for depth_level in range(level):
-                next_level_dirs = []
-                
-                for dir_path in temp_dirs:
-                    self._rate_limit_wait()
-                    
-                    try:
-                        query_params_level: Dict[str, Any] = {'recursive': False}
-                        if dir_path:
-                            query_params_level['path'] = dir_path
-                        
-                        with self.performance_tracker.track_api_call_context('file_tree', self.debug):
-                            items = self.gl.http_list(
-                                f'/projects/{project_obj.id}/repository/tree',
-                                query_data=query_params_level,
-                                get_all=True
-                            )
-                        
-                        for item in items:
-                            if item['type'] == 'tree':  # Directory
-                                next_level_dirs.append(item['path'])
-                                
-                    except Exception as e:
-                        if self.debug:
-                            click.echo(f"Debug: Error accessing directory '{dir_path}': {e}")
-                        continue
-                
-                temp_dirs = next_level_dirs
-                if not temp_dirs:  # No more directories found
-                    return found_files
-            
-            directories_to_search = temp_dirs
+        # Use the current level directories (no more rebuilding from scratch)
+        directories_to_search = self.current_level_dirs
         
-        # Now search the directories at the target level
+        # Search the directories at the current level
         for dir_path in directories_to_search:
             self._rate_limit_wait()
             
@@ -270,6 +236,9 @@ class GitLabAnalyzer:
                         file_name = item['name']
                         if self._is_target_file(file_name):
                             found_files.append(item['path'])
+                    elif item['type'] == 'tree':  # Directory
+                        # Store directories for next level search
+                        self.next_level_dirs.append(item['path'])
                             
             except Exception as e:
                 if self.debug:
@@ -277,53 +246,6 @@ class GitLabAnalyzer:
                 continue
         
         return found_files
-    
-    def _find_relevant_files(self, project_obj: Any) -> List[str]:
-        """Get files at root, level 1, and level 2 using progressive depth search"""
-        found_files = []
-        directories_to_search = [""]  # Start with root
-        
-        for current_depth in range(3):  # 0=root, 1=level1, 2=level2
-            next_level_dirs = []
-            
-            for dir_path in directories_to_search:
-                self._rate_limit_wait()
-                
-                try:
-                    # Use GitLab API with path parameter for depth control
-                    query_params: Dict[str, Any] = {'recursive': False}
-                    if dir_path:  # Only add path parameter if not root
-                        query_params['path'] = dir_path
-                    
-                    # Use context manager for file tree API call tracking
-                    with self.performance_tracker.track_api_call_context('file_tree', self.debug):
-                        items = self.gl.http_list(
-                            f'/projects/{project_obj.id}/repository/tree',
-                            query_data=query_params,
-                            get_all=True
-                        )
-                    
-                    for item in items:
-                        if item['type'] == 'blob':  # File
-                            file_name = item['name']
-                            if self._is_target_file(file_name):
-                                # Store full path directly in found_files
-                                found_files.append(item['path'])
-                        elif item['type'] == 'tree' and current_depth < 2:  # Directory
-                            next_level_dirs.append(item['path'])
-                            
-                except Exception as e:
-                    if self.debug:
-                        click.echo(f"Debug: Error accessing directory '{dir_path}': {e}")
-                    continue
-            
-            directories_to_search = next_level_dirs
-            if not directories_to_search:  # No more directories to search
-                break
-        
-        return found_files
-    
-
     
     def analyze_repository(self, project: Any) -> Dict[str, Any]:
         """Analyze a single repository for web app characteristics"""
@@ -404,14 +326,22 @@ class GitLabAnalyzer:
     
     def _analyze_web_app_type(self, project_obj: Any) -> Dict[str, Any]:
         """Analyze repository to determine if it's a web app and what type using progressive depth search"""
-        # Progressive depth search: analyze files level by level
+        # Progressive depth search: analyze files Directory level by level
         max_depth = self.max_search_depth
+        
+        # Initialize directory tracking for progressive search optimization
+        self.current_level_dirs = [""]  # Start with root directory
+        self.next_level_dirs = []
         
         all_files = []  # Accumulate files across levels
         
         for level in range(max_depth + 1):
             # Get files at current level only
             level_files = self._find_relevant_files_at_level(project_obj, level)
+            
+            # Update directory lists for next level
+            self.current_level_dirs = self.next_level_dirs
+            self.next_level_dirs = []
             
             if self.debug:
                 click.echo(f"Debug: Level {level} found {len(level_files)} relevant files")
