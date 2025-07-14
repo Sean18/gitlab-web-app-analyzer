@@ -128,17 +128,53 @@ class GitLabAnalyzer:
         """Get list of repositories with optional name filtering"""
         try:
             click.echo("Fetching repositories from GitLab API...")
-            self._rate_limit_wait()
-            click.echo("Making API request...")
-            # Get projects owned by or accessible to the authenticated user
-            page_size = min(self.max_projects, 100)  # GitLab's max per_page is 100
-            projects = self._api_call_with_retry(
-                lambda: self.gl.projects.list(membership=True, per_page=page_size),
-                call_type='project_list'
-            )
+            
+            #per_page = 100  # Use max page size (100) for efficiency
+            per_page = 3 # Use a low size for TESTING ONLY
+
+            # Handle paging for max_projects > 100
+            if self.max_projects <= per_page:
+                # Single API call for small requests
+                self._rate_limit_wait()
+                click.echo("Making API request...")
+                page_size = min(self.max_projects, per_page)
+                projects = self._api_call_with_retry(
+                    lambda: self.gl.projects.list(membership=True, per_page=page_size, get_all=False),
+                    call_type='project_list'
+                )
+            else:
+                # Multiple API calls for large requests
+                projects = []
+                page = 1
+                
+                while len(projects) < self.max_projects:
+                    remaining = self.max_projects - len(projects)
+                    current_page_size = min(remaining, per_page)
+                    
+                    self._rate_limit_wait()
+                    click.echo(f"Making API request for page {page} (requesting {current_page_size} projects)...")
+                    
+                    page_projects = self._api_call_with_retry(
+                        lambda: self.gl.projects.list(membership=True, per_page=current_page_size, page=page, get_all=False),
+                        call_type='project_list'
+                    )
+                    
+                    if not page_projects:
+                        click.echo("No more projects available")
+                        break
+                        
+                    projects.extend(page_projects)
+                    click.echo(f"Retrieved {len(page_projects)} projects from page {page} (total: {len(projects)})")
+                    
+                    # Stop if we got less than requested (no more pages)
+                    if len(page_projects) < current_page_size:
+                        break
+                        
+                    page += 1
+            
             if not projects:
                 projects = []
-            click.echo(f"Retrieved {len(projects)} projects from API")
+            click.echo(f"Total projects retrieved: {len(projects)}")
             
             if name_filter:
                 click.echo(f"Applying filter: {name_filter}")
