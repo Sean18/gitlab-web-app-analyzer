@@ -36,7 +36,7 @@ class PerformanceReporter:
         self.target_total_repos = 1000
         self.target_total_time = 30 * 60  # 30 minutes in seconds
         
-    def generate_report(self, results: List[Dict], total_time: float) -> str:
+    def generate_report(self, results: List[Dict], total_time: float, debug: bool = False) -> str:
         """Generate comprehensive performance report"""
         performance_summary = self.analyzer.performance_tracker.get_summary()
         
@@ -69,6 +69,38 @@ class PerformanceReporter:
             f"Target time (30 minutes): {'✅ ACHIEVABLE' if projected_minutes <= 30 else '❌ TOO SLOW'}",
             f"Speed improvement needed: {(projected_minutes/30):.1f}x" if projected_minutes > 30 else "Current speed is sufficient",
         ])
+        
+        # Detection level analysis
+        report_lines.extend([
+            "",
+            "DETECTION LEVEL ANALYSIS",
+            "-" * 40,
+        ])
+        
+        # Calculate overall detection level distribution
+        total_repos_with_levels = 0
+        level_counts = {'root': 0, 'level_1': 0, 'level_2': 0, 'not_detected': 0}
+        
+        for app_type, metrics in performance_summary['app_type_metrics'].items():
+            if app_type != 'Error':  # Skip error entries
+                total_repos_with_levels += metrics['count']
+                for level, count in metrics['detection_levels'].items():
+                    level_counts[level] += count
+        
+        if total_repos_with_levels > 0:
+            root_pct = (level_counts['root'] / total_repos_with_levels) * 100
+            level1_pct = (level_counts['level_1'] / total_repos_with_levels) * 100
+            level2_pct = (level_counts['level_2'] / total_repos_with_levels) * 100
+            not_detected_pct = (level_counts['not_detected'] / total_repos_with_levels) * 100
+            
+            report_lines.extend([
+                f"Root level (0):    {level_counts['root']:3d} repos ({root_pct:5.1f}%)",
+                f"Level 1:           {level_counts['level_1']:3d} repos ({level1_pct:5.1f}%)",  
+                f"Level 2:           {level_counts['level_2']:3d} repos ({level2_pct:5.1f}%)",
+                f"Not detected:      {level_counts['not_detected']:3d} repos ({not_detected_pct:5.1f}%)",
+                "",
+                f"Early detection (Root + L1): {level_counts['root'] + level_counts['level_1']:3d} repos ({root_pct + level1_pct:5.1f}%)",
+            ])
         
         # API call breakdown
         report_lines.extend([
@@ -138,6 +170,51 @@ class PerformanceReporter:
                         f"  {call_type.ljust(12)}: {avg_calls:5.1f} calls/repo, "
                         f"{avg_time:.3f}s/call, {avg_total_time:.2f}s/repo"
                     )
+        
+        # Detection level breakdown by app type
+        report_lines.extend([
+            "",
+            "DETECTION LEVEL BY APP TYPE",
+            "-" * 40,
+        ])
+        
+        for app_type, metrics in sorted_app_types:
+            if app_type != 'Error' and metrics['count'] > 0:
+                levels = metrics['detection_levels']
+                total = metrics['count']
+                
+                root_pct = (levels['root'] / total) * 100 if total > 0 else 0
+                l1_pct = (levels['level_1'] / total) * 100 if total > 0 else 0
+                l2_pct = (levels['level_2'] / total) * 100 if total > 0 else 0
+                
+                report_lines.append(
+                    f"{app_type.ljust(20)}: Root={levels['root']:2d}({root_pct:4.0f}%), "
+                    f"L1={levels['level_1']:2d}({l1_pct:4.0f}%), L2={levels['level_2']:2d}({l2_pct:4.0f}%)"
+                )
+        
+        # Individual repository details (debug mode only)
+        if debug and hasattr(self.analyzer.performance_tracker, 'repo_metrics'):
+            report_lines.extend([
+                "",
+                "INDIVIDUAL REPOSITORY DETECTION LEVELS (DEBUG)",
+                "-" * 60,
+                f"{'Repository Name'.ljust(40)} {'Level'.ljust(8)} {'App Type'.ljust(15)} {'Time'.ljust(8)}",
+                "-" * 60,
+            ])
+            
+            # Sort repos by detection level, then by name
+            repo_items = list(self.analyzer.performance_tracker.repo_metrics.items())
+            repo_items.sort(key=lambda x: (x[1]['detection_level'], x[0]))
+            
+            for repo_name, repo_metrics in repo_items:
+                level = repo_metrics['detection_level']
+                level_str = f"Root" if level == 0 else f"L{level}" if level > 0 else "None"
+                app_type = repo_metrics.get('app_type', 'Unknown')
+                time_str = f"{repo_metrics['total_time']:.1f}s"
+                
+                report_lines.append(
+                    f"{repo_name[:39].ljust(40)} {level_str.ljust(8)} {app_type[:14].ljust(15)} {time_str.ljust(8)}"
+                )
         
         # Optimization recommendations
         report_lines.extend([
@@ -283,7 +360,7 @@ def main(gitlab_url, token, mode, app_type, output, max_per_type, rate_limit, de
     
     try:
         # Initialize analyzer with performance tracking enabled
-        analyzer = GitLabAnalyzer(gitlab_url, token, rate_limit, debug, search_depth=2, enable_performance_tracking=True)
+        analyzer = GitLabAnalyzer(gitlab_url, token, rate_limit, debug, max_search_depth=2, enable_performance_tracking=True)
         
         # Set no_rate_limit flag for testing
         if no_rate_limit:
@@ -325,7 +402,7 @@ def main(gitlab_url, token, mode, app_type, output, max_per_type, rate_limit, de
         # Generate performance report
         click.echo(f"Generating performance report...")
         reporter = PerformanceReporter(analyzer)
-        report = reporter.generate_report(results, test_total_time)
+        report = reporter.generate_report(results, test_total_time, debug)
         
         # Write report to file
         with open(output, 'w', encoding='utf-8') as f:

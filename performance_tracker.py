@@ -56,16 +56,18 @@ class PerformanceTracker:
             'api_calls': {k: {'count': 0, 'total_time': 0.0} for k in self.api_calls.keys()},
             'analysis_time': 0.0,
             'total_time': 0.0,
-            'app_type': None
+            'app_type': None,
+            'detection_level': -1  # -1 = not detected, 0 = root, 1 = level 1, 2 = level 2
         }
     
-    def finish_repo_analysis(self, repo_name: str, app_type: str, analysis_time: float):
+    def finish_repo_analysis(self, repo_name: str, app_type: str, analysis_time: float, detection_level: int = -1):
         """Finish tracking metrics for a repository"""
         if repo_name in self.repo_metrics:
             repo_metrics = self.repo_metrics[repo_name]
             repo_metrics['total_time'] = time.time() - repo_metrics['start_time']
             repo_metrics['analysis_time'] = analysis_time
             repo_metrics['app_type'] = app_type
+            repo_metrics['detection_level'] = detection_level
             
             # Aggregate by app type
             if app_type not in self.app_type_metrics:
@@ -73,13 +75,24 @@ class PerformanceTracker:
                     'count': 0,
                     'total_time': 0.0,
                     'analysis_time': 0.0,
-                    'api_calls': {k: {'count': 0, 'total_time': 0.0} for k in self.api_calls.keys()}
+                    'api_calls': {k: {'count': 0, 'total_time': 0.0} for k in self.api_calls.keys()},
+                    'detection_levels': {'root': 0, 'level_1': 0, 'level_2': 0, 'not_detected': 0}
                 }
             
             app_metrics = self.app_type_metrics[app_type]
             app_metrics['count'] += 1
             app_metrics['total_time'] += repo_metrics['total_time']
             app_metrics['analysis_time'] += repo_metrics['analysis_time']
+            
+            # Track detection level distribution
+            if detection_level == 0:
+                app_metrics['detection_levels']['root'] += 1
+            elif detection_level == 1:
+                app_metrics['detection_levels']['level_1'] += 1
+            elif detection_level == 2:
+                app_metrics['detection_levels']['level_2'] += 1
+            else:
+                app_metrics['detection_levels']['not_detected'] += 1
             
             for call_type, metrics in repo_metrics['api_calls'].items():
                 app_metrics['api_calls'][call_type]['count'] += metrics['count']
@@ -99,17 +112,17 @@ class PerformanceTracker:
                 self.repo_name = repo_name
                 self.analysis_start_time = analysis_start_time
             
-            def finish(self, app_type: str):
-                """Finish tracking with app type"""
+            def finish(self, app_type: str, detection_level: int = -1):
+                """Finish tracking with app type and detection level"""
                 analysis_time = time.time() - self.analysis_start_time
-                self.tracker.finish_repo_analysis(self.repo_name, app_type, analysis_time)
+                self.tracker.finish_repo_analysis(self.repo_name, app_type, analysis_time, detection_level)
         
         try:
             yield RepoTracker(self, repo_name)
         except Exception:
             # Ensure cleanup even on error
             analysis_time = time.time() - analysis_start_time
-            self.finish_repo_analysis(repo_name, 'Error', analysis_time)
+            self.finish_repo_analysis(repo_name, 'Error', analysis_time, -1)
             raise
     
     @contextmanager
@@ -159,14 +172,14 @@ class NoOpTracker:
     def start_repo_analysis(self, repo_name: str):
         pass
     
-    def finish_repo_analysis(self, repo_name: str, app_type: str, analysis_time: float):
+    def finish_repo_analysis(self, repo_name: str, app_type: str, analysis_time: float, detection_level: int = -1):
         pass
     
     @contextmanager
     def track_repository(self, repo_name: str):
         """No-op context manager"""
         class NoOpRepoTracker:
-            def finish(self, app_type: str):
+            def finish(self, app_type: str, detection_level: int = -1):
                 pass
         
         yield NoOpRepoTracker()
