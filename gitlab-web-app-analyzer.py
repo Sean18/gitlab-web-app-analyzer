@@ -32,7 +32,7 @@ from performance_tracker import create_performance_tracker
 class GitLabAnalyzer:
     """Main analyzer class for GitLab repositories"""
     
-    def __init__(self, gitlab_url: str, token: Optional[str] = None, rate_limit: float = 2.0, debug: bool = False, max_search_depth: int = 2, enable_performance_tracking: bool = False):
+    def __init__(self, gitlab_url: str, token: Optional[str] = None, rate_limit: float = 2.0, debug: bool = False, max_search_depth: int = 2, enable_performance_tracking: bool = False, max_projects: int = 1000):
         self.gitlab_url = gitlab_url
         self.rate_limit = rate_limit
         self.last_request_time = 0
@@ -41,6 +41,7 @@ class GitLabAnalyzer:
         self.total_wait_time = 0
         self.no_rate_limit = False
         self.max_search_depth = max_search_depth  # Maximum directory depth to search
+        self.max_projects = max_projects  # Maximum number of projects to analyze
         self.performance_tracker = create_performance_tracker(enable_performance_tracking)
         
         # Directory tracking for progressive level search optimization
@@ -130,8 +131,9 @@ class GitLabAnalyzer:
             self._rate_limit_wait()
             click.echo("Making API request...")
             # Get projects owned by or accessible to the authenticated user
+            page_size = min(self.max_projects, 100)  # GitLab's max per_page is 100
             projects = self._api_call_with_retry(
-                lambda: self.gl.projects.list(membership=True, per_page=100),
+                lambda: self.gl.projects.list(membership=True, per_page=page_size),
                 call_type='project_list'
             )
             if not projects:
@@ -1054,7 +1056,8 @@ class GitLabAnalyzer:
 @click.option('--debug', is_flag=True, help='Enable debug logging for performance analysis')
 @click.option('--no-rate-limit', is_flag=True, help='Disable rate limiting (for testing)')
 @click.option('--max-depth', default=2, help='Maximum directory depth to search (default: 2)')
-def main(gitlab_url, token, output, name_filter, rate_limit, debug, no_rate_limit, max_depth):
+@click.option('--max-projects', default=1000, help='Maximum number of projects to analyze (default: 1000)')
+def main(gitlab_url, token, output, name_filter, rate_limit, debug, no_rate_limit, max_depth, max_projects):
     """GitLab Web App Repository Analyzer"""
     
     # Generate default output filename if not provided
@@ -1079,7 +1082,7 @@ def main(gitlab_url, token, output, name_filter, rate_limit, debug, no_rate_limi
     
     try:
         # Initialize analyzer (performance tracking disabled by default)
-        analyzer = GitLabAnalyzer(gitlab_url, token, rate_limit, debug, max_depth, enable_performance_tracking=False)
+        analyzer = GitLabAnalyzer(gitlab_url, token, rate_limit, debug, max_depth, enable_performance_tracking=False, max_projects=max_projects)
         
         # Set no_rate_limit flag for testing
         if no_rate_limit:
