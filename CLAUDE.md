@@ -27,6 +27,41 @@ python3 gitlab-web-app-analyzer.py --gitlab-url https://gitlab.com --token YOUR_
 python3 gitlab-web-app-analyzer.py --gitlab-url https://gitlab.com --token YOUR_GITLAB_TOKEN --filter "repo-name" --output temp-file.csv
 ```
 
+### Performance Testing
+
+The analyzer includes comprehensive performance testing capabilities via `perftest.py` to analyze runtime performance per app type (.NET, Java, Node.js, etc.) with detailed metrics on API calls, processing time, and bottlenecks.
+
+#### Quick Performance Test (Balanced Subset)
+```bash
+python3 perftest.py --mode small --max-per-type 2 --debug --gitlab-url https://gitlab.com --token YOUR_GITLAB_TOKEN
+```
+
+#### Test Specific App Type
+```bash
+python3 perftest.py --mode app-type --app-type ".NET" --debug --gitlab-url https://gitlab.com --token YOUR_GITLAB_TOKEN
+```
+
+#### Full Performance Test (All Repositories)
+```bash
+python3 perftest.py --mode full --gitlab-url https://gitlab.com --token YOUR_GITLAB_TOKEN
+```
+
+#### Test Modes
+- `--mode small`: Balanced subset testing (default: 3 repos per app type)
+- `--mode full`: Test all available repositories  
+- `--mode app-type`: Focus on specific app type (requires `--app-type`)
+
+#### Performance Report Output
+The performance test generates a detailed report including:
+- **1000-repo projections**: Estimated time to scan 1000 repositories
+- **Bottleneck identification**: Slowest API calls and app types
+- **Optimization recommendations**: Specific actions to improve speed
+- **App type comparison**: Performance breakdown by technology stack (.NET, Java, Node.js, Python, PHP, Go)
+- **API call breakdown**: Time spent on project info, languages, file tree, file content calls
+
+#### Target Performance
+- **Goal**: 1000 repositories in 30 minutes
+- **Current status**: Use performance tests to validate scaling and identify optimization opportunities
 
 ## Framework Detection Patterns
 
@@ -62,19 +97,41 @@ python3 gitlab-web-app-analyzer.py --gitlab-url https://gitlab.com --token YOUR_
 - `System.Web` → ASP.NET Framework
 - Web project references in `.sln` files
 
-## Test Results (2025-07-08)
+## Test Results (2025-07-14)
 <!-- NOTE: When updating test results, replace this entire section with new data -->
 
-### Current Status: 100% Detection Rate ✅
-- **Applications tested**: 34 web applications
-- **Detection rate**: 100% (34/34 detected)
-- **Execution time**: 198 seconds for 38 repositories
+### Current Status: 95.5% Detection Rate ✅
+- **Total repositories tested**: 44 repositories
+- **Web applications detected**: 42 web applications
+- **Non-web repositories**: 2 (correctly identified as non-web)
+- **Detection rate**: 95.5% (42/44 detected correctly)
 - **Coverage**: 15+ frameworks across 6 languages
+
+### Technology Stack Distribution
+- **.NET**: 16 applications (12 .NET Core, 4 .NET Framework)
+  - ASP.NET Core, Blazor WebAssembly, Blazor Server, ASP.NET MVC, ASP.NET Web API
+- **Java**: 8 applications 
+  - Spring Boot, Spring WebFlux, Quarkus, Spring Framework
+- **Node.js**: 6 applications
+  - Express.js applications with various architectures
+- **Python**: 4 applications
+  - Django, Flask, FastAPI frameworks
+- **PHP**: 4 applications  
+  - Laravel, Symfony, CodeIgniter 4
+- **Go**: 4 applications
+  - Gin, Go HTTP, AWS Lambda Go
 
 ### Test Command
 ```bash
-./simple-test.sh YOUR_GITLAB_TOKEN
+python3 gitlab-web-app-analyzer.py --gitlab-url https://gitlab.com --token YOUR_GITLAB_TOKEN
 ```
+
+### Performance Tracking
+Performance optimization implemented with optional tracking:
+- **Modular design**: Performance tracking moved to separate `performance_tracker.py`
+- **Zero overhead**: Optional tracking (disabled by default)
+- **Context managers**: Clean integration with repository and API call tracking
+- **Comprehensive metrics**: API call breakdown, processing time analysis, 1000-repo projections
 
 ## Key Fixes Applied
 
