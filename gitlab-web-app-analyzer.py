@@ -129,8 +129,8 @@ class GitLabAnalyzer:
         try:
             click.echo("Fetching repositories from GitLab API...")
             
-            #per_page = 100  # Use max page size (100) for efficiency
-            per_page = 3 # Use a low size for TESTING ONLY
+            per_page = 100  # Use max page size (100) for efficiency
+            #per_page = 3 # Use a low size for TESTING ONLY
 
             # Handle paging for max_projects > 100
             if self.max_projects <= per_page:
