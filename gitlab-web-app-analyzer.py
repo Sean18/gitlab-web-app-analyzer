@@ -186,6 +186,9 @@ class GitLabAnalyzer:
                 projects = [p for p in projects if name_filter.lower() in p.name.lower()]
                 click.echo(f"After filtering: {len(projects)} projects")
             
+            # Filter out deleted repositories (they have "deleted" in the name, until actually deleted)
+            projects = [p for p in projects if 'deleted' not in p.name.lower()]
+            
             return projects
         except Exception as e:
             raise click.ClickException(f"Failed to fetch repositories: {e}")
