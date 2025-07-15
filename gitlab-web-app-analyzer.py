@@ -28,6 +28,11 @@ from gitlab.exceptions import GitlabError
 # Import performance tracking module
 from performance_tracker import create_performance_tracker
 
+# Import Rich for enhanced progress display
+from rich.console import Console
+from rich.live import Live
+from rich.text import Text
+
 
 class GitLabAnalyzer:
     """Main analyzer class for GitLab repositories"""
@@ -1134,15 +1139,101 @@ def main(gitlab_url, token, output, name_filter, rate_limit, debug, no_rate_limi
         results = []
         analysis_start_time = time.time()
         
-        with click.progressbar(repositories, label='Analyzing repositories') as repos:
-            for repo in repos:
-                result = analyzer.analyze_repository(repo)
-                results.append(result)
+        # Initialize counters
+        web_apps_found = 0
+        errors_encountered = 0
+        
+        # Add whitespace before progress display
+        click.echo()
+        click.echo("=" * 60)
+        
+        # Create console for multi-line display
+        console = Console()
+        
+        def create_display(completed, total, elapsed, eta, rate, current_repo, web_apps, errors):
+            """Create multi-line display content"""
+            # Progress bar
+            progress_bar = "█" * int(30 * completed / total) + "░" * (30 - int(30 * completed / total))
+            percent = (completed / total) * 100
+            
+            # Format time
+            def format_time(seconds):
+                if seconds < 0:
+                    return "--:--"
+                hours = int(seconds // 3600)
+                minutes = int((seconds % 3600) // 60)
+                secs = int(seconds % 60)
+                if hours > 0:
+                    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+                else:
+                    return f"{minutes:02d}:{secs:02d}"
+            
+            lines = [
+                Text("🔍 Analyzing GitLab Repositories ...", style="bold blue"),
+                Text(f"Progress: {completed}/{total} ({percent:.1f}%) │{progress_bar}│", style="white"),
+                Text(f"Runtime: {format_time(elapsed)} │ ETA: {format_time(eta)} │ Rate: {rate:.1f} repos/sec", style="cyan"),
+                Text(f"Current: {current_repo}", style="green"),
+                Text(f"Web Apps Found: {web_apps} │ Errors: {errors}", style="yellow"),
+                Text("")
+            ]
+            
+            return "\n".join([line.plain for line in lines])
+        
+        repos_completed = 0
+        with Live(console=console, refresh_per_second=2) as live:
+            for repo in repositories:
+                # Truncate repository name for display
+                repo_display = repo.name[:40] + "..." if len(repo.name) > 43 else repo.name
+                
+                # Update display to show current repo being analyzed
+                repos_completed += 1
+                elapsed_time = time.time() - analysis_start_time
+                rate = repos_completed / elapsed_time if elapsed_time > 0 else 0.0
+                remaining_repos = len(repositories) - repos_completed
+                eta = remaining_repos / rate if rate > 0 else 0
+                
+                display_content = create_display(
+                    repos_completed, len(repositories), elapsed_time, eta, 
+                    rate, repo_display, web_apps_found, errors_encountered
+                )
+                live.update(Text(display_content))
+                
+                try:
+                    result = analyzer.analyze_repository(repo)
+                    results.append(result)
+                    
+                    # Update counters after analysis
+                    if result and result.get('is_web_app') == 'YES':
+                        web_apps_found += 1
+                        
+                        # Update display immediately after web app found
+                        display_content = create_display(
+                            repos_completed, len(repositories), elapsed_time, eta, 
+                            rate, repo_display, web_apps_found, errors_encountered
+                        )
+                        live.update(Text(display_content))
+                        
+                except Exception as e:
+                    errors_encountered += 1
+                    # Log error but continue processing
+                    if debug:
+                        click.echo(f"Error analyzing {repo.name}: {e}")
+                    
+                    # Update display immediately after error
+                    display_content = create_display(
+                        repos_completed, len(repositories), elapsed_time, eta, 
+                        rate, repo_display, web_apps_found, errors_encountered
+                    )
+                    live.update(Text(display_content))
         
         analysis_total_time = time.time() - analysis_start_time
         
+        # Add whitespace after progress display
+        #click.echo("=" * 60)
+        #click.echo()
+        
         # Write CSV output
-        click.echo(f"Writing results to {output}...")
+        #click.echo(f"Writing results to {output}...")
         csv_columns = [
             'Repository Name', 'Repository URL', 'Is Web App', 'Confidence Level',
             'Web App Type', 'Frontend Framework', 'Backend Framework', 'Package Manager',
@@ -1174,11 +1265,16 @@ def main(gitlab_url, token, output, name_filter, rate_limit, debug, no_rate_limi
         web_apps = len([r for r in results if r['is_web_app'] == 'YES'])
         errors = len([r for r in results if r['is_web_app'] == 'ERROR'])
         
-        click.echo(f"\nAnalysis complete!")
-        click.echo(f"Total repositories analyzed: {len(results)}")
-        click.echo(f"Web applications found: {web_apps}")
-        click.echo(f"Errors encountered: {errors}")
-        click.echo(f"Results saved to: {output}")
+        # Summary section with visual separation
+        click.echo()
+        click.echo(f"Analysis complete!")
+        click.echo("=" * 60)
+        click.echo(f"    Total repositories analyzed: {len(results)}")
+        click.echo(f"    Web applications found: {web_apps}")
+        click.echo(f"    Errors encountered: {errors}")
+        click.echo(f"    Results saved to: {output}")
+        click.echo("=" * 60)
+        click.echo()
         
         # Performance summary
         if debug:
