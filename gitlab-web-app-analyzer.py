@@ -1199,6 +1199,7 @@ def main(gitlab_url, token, output, name_filter, rate_limit, debug, no_rate_limi
         # Get repositories
         click.echo("Fetching repositories...")
         repositories = analyzer.get_repositories(name_filter)
+        repositories = analyzer.filter_unprocessed_repos(repositories, output)
         click.echo(f"Found {len(repositories)} repositories to analyze")
         
         # Analyze repositories - setup streaming CSV
