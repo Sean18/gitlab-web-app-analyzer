@@ -258,9 +258,8 @@ class GitLabAnalyzer:
                 writer = csv.writer(csvfile)
                 writer.writerow([
                     'Repository Name', 'Repository URL', 'Is Web App', 
-                    'Confidence Level', 'Web App Type', 'Frontend Framework',
-                    'Backend Framework', 'Package Manager', 'Web Server',
-                    'Web Server OS', 'Languages', 'Date Created', 'Notes'
+                    'Confidence Level', 'Web App Type', 'Framework', 
+                    'Package Manager', 'Languages', 'Date Created', 'Notes'
                 ])
 
     def append_result_to_csv(self, output_file, result):
@@ -274,11 +273,8 @@ class GitLabAnalyzer:
                     result.get('is_web_app', ''),
                     result.get('confidence', ''),
                     result.get('web_app_type', ''),
-                    result.get('frontend_framework', ''),
                     result.get('backend_framework', ''),
                     result.get('package_manager', ''),
-                    result.get('web_server', ''),
-                    result.get('web_server_os', ''),
                     result.get('languages', ''),
                     result.get('date_created', ''),
                     result.get('notes', '')
@@ -405,11 +401,8 @@ class GitLabAnalyzer:
                     'is_web_app': 'UNKNOWN',
                     'confidence': 'LOW',
                     'web_app_type': '',
-                    'frontend_framework': '',
                     'backend_framework': '',
                     'package_manager': '',
-                    'web_server': '',
-                    'web_server_os': '',
                     'languages': '',
                     'date_created': '',
                     'notes': ''
@@ -456,11 +449,8 @@ class GitLabAnalyzer:
                     'is_web_app': 'ERROR',
                     'confidence': 'LOW',
                     'web_app_type': '',
-                    'frontend_framework': '',
                     'backend_framework': '',
                     'package_manager': '',
-                    'web_server': '',
-                    'web_server_os': '',
                     'languages': '',
                     'date_created': '',
                     'notes': f'Analysis error: {str(e)}'
@@ -517,11 +507,8 @@ class GitLabAnalyzer:
                 'is_web_app': 'NO',
                 'confidence': 'LOW',
                 'web_app_type': '',
-                'frontend_framework': '',
                 'backend_framework': '',
                 'package_manager': '',
-                'web_server': '',
-                'web_server_os': '',
                 'notes': 'No relevant files found',
                 'detection_level': -1
             }
@@ -532,11 +519,8 @@ class GitLabAnalyzer:
             'is_web_app': 'NO',
             'confidence': 'LOW',
             'web_app_type': '',
-            'frontend_framework': '',
             'backend_framework': '',
             'package_manager': '',
-            'web_server': '',
-            'web_server_os': '',
             'notes': ''
         }
         
@@ -916,7 +900,6 @@ class GitLabAnalyzer:
             analysis['is_web_app'] = 'YES'
             analysis['web_app_type'] = '.NET Framework'
             analysis['backend_framework'] = 'ASP.NET'
-            analysis['web_server_os'] = 'Windows'
             analysis['package_manager'] = 'NuGet'
             confidence_score += 25
             evidence.append(f'Found {web_config_files[0]} file')
@@ -930,7 +913,6 @@ class GitLabAnalyzer:
             analysis['is_web_app'] = 'YES'
             analysis['web_app_type'] = '.NET Framework'
             analysis['backend_framework'] = 'ASP.NET'
-            analysis['web_server_os'] = 'Windows'
             analysis['package_manager'] = 'NuGet'
             confidence_score += 25
             evidence.append(f'Found {global_asax_files[0]} file')
@@ -1047,11 +1029,8 @@ class GitLabAnalyzer:
             'is_web_app': 'NO',
             'confidence': 'LOW',
             'web_app_type': '',
-            'frontend_framework': '',
             'backend_framework': '',
             'package_manager': '',
-            'web_server': '',
-            'web_server_os': '',
             'notes': ''
         }
         
