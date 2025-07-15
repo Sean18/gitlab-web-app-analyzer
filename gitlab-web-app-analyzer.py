@@ -190,6 +190,72 @@ class GitLabAnalyzer:
         except Exception as e:
             raise click.ClickException(f"Failed to fetch repositories: {e}")
     
+    def get_already_processed_repos(self, output_file):
+        """Get list of repository names already processed from existing CSV"""
+        if not os.path.exists(output_file):
+            return set()
+        
+        processed = set()
+        try:
+            with open(output_file, 'r', newline='', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    processed.add(row['Repository Name'])
+        except Exception as e:
+            print(f"Warning: Could not read existing CSV ({e}). Starting fresh.")
+            return set()
+        
+        return processed
+
+    def filter_unprocessed_repos(self, repositories, output_file):
+        """Filter out repositories that have already been processed"""
+        processed = self.get_already_processed_repos(output_file)
+        unprocessed = [repo for repo in repositories if repo.name not in processed]
+        
+        if processed:
+            print(f"  Resume mode: Found {len(processed)} already processed repositories")
+            print(f"  Continuing with {len(unprocessed)} remaining repositories")
+        
+        return unprocessed
+
+    def write_csv_header_if_needed(self, output_file):
+        """Write CSV header only if file doesn't exist"""
+        if not os.path.exists(output_file):
+            with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow([
+                    'Repository Name', 'Repository URL', 'Is Web App', 
+                    'Confidence Level', 'Web App Type', 'Frontend Framework',
+                    'Backend Framework', 'Package Manager', 'Web Server',
+                    'Web Server OS', 'Languages', 'Date Created', 'Notes'
+                ])
+
+    def append_result_to_csv(self, output_file, result):
+        """Append single result to CSV file (streaming write)"""
+        try:
+            with open(output_file, 'a', newline='', encoding='utf-8') as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow([
+                    result.get('name', ''),
+                    result.get('url', ''),
+                    result.get('is_web_app', ''),
+                    result.get('confidence', ''),
+                    result.get('web_app_type', ''),
+                    result.get('frontend_framework', ''),
+                    result.get('backend_framework', ''),
+                    result.get('package_manager', ''),
+                    result.get('web_server', ''),
+                    result.get('web_server_os', ''),
+                    result.get('languages', ''),
+                    result.get('date_created', ''),
+                    result.get('notes', '')
+                ])
+                csvfile.flush()  # Force write to disk immediately
+                os.fsync(csvfile.fileno())  # Ensure OS writes to disk
+        except Exception as e:
+            print(f"Warning: Failed to write result to CSV: {e}")
+            # Continue processing - don't fail entire analysis for CSV issue
+
     def get_file_content(self, project_obj: Any, file_path: str) -> Optional[str]:
         """Get content of a file from repository using cached project object"""
         if self.debug:
@@ -1135,8 +1201,8 @@ def main(gitlab_url, token, output, name_filter, rate_limit, debug, no_rate_limi
         repositories = analyzer.get_repositories(name_filter)
         click.echo(f"Found {len(repositories)} repositories to analyze")
         
-        # Analyze repositories
-        results = []
+        # Analyze repositories - setup streaming CSV
+        analyzer.write_csv_header_if_needed(output)
         analysis_start_time = time.time()
         
         # Initialize counters
@@ -1200,7 +1266,7 @@ def main(gitlab_url, token, output, name_filter, rate_limit, debug, no_rate_limi
                 
                 try:
                     result = analyzer.analyze_repository(repo)
-                    results.append(result)
+                    analyzer.append_result_to_csv(output, result)
                     
                     # Update counters after analysis
                     if result and result.get('is_web_app') == 'YES':
@@ -1232,44 +1298,15 @@ def main(gitlab_url, token, output, name_filter, rate_limit, debug, no_rate_limi
         #click.echo("=" * 60)
         #click.echo()
         
-        # Write CSV output
-        #click.echo(f"Writing results to {output}...")
-        csv_columns = [
-            'Repository Name', 'Repository URL', 'Is Web App', 'Confidence Level',
-            'Web App Type', 'Frontend Framework', 'Backend Framework', 'Package Manager',
-            'Web Server', 'Web Server OS', 'Languages', 'Date Created', 'Notes'
-        ]
-        
-        with open(output, 'w', newline='', encoding='utf-8') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=csv_columns)
-            writer.writeheader()
-            
-            for result in results:
-                writer.writerow({
-                    'Repository Name': result['name'],
-                    'Repository URL': result['url'],
-                    'Is Web App': result['is_web_app'],
-                    'Confidence Level': result['confidence'],
-                    'Web App Type': result['web_app_type'],
-                    'Frontend Framework': result['frontend_framework'],
-                    'Backend Framework': result['backend_framework'],
-                    'Package Manager': result['package_manager'],
-                    'Web Server': result['web_server'],
-                    'Web Server OS': result['web_server_os'],
-                    'Languages': result['languages'],
-                    'Date Created': result['date_created'],
-                    'Notes': result['notes']
-                })
-        
-        # Summary
-        web_apps = len([r for r in results if r['is_web_app'] == 'YES'])
-        errors = len([r for r in results if r['is_web_app'] == 'ERROR'])
+        # Summary - use counters from analysis loop
+        web_apps = web_apps_found
+        errors = errors_encountered
         
         # Summary section with visual separation
         click.echo()
         click.echo(f"Analysis complete!")
         click.echo("=" * 60)
-        click.echo(f"    Total repositories analyzed: {len(results)}")
+        click.echo(f"    Total repositories analyzed: {len(repositories)}")
         click.echo(f"    Web applications found: {web_apps}")
         click.echo(f"    Errors encountered: {errors}")
         click.echo(f"    Results saved to: {output}")
@@ -1283,7 +1320,7 @@ def main(gitlab_url, token, output, name_filter, rate_limit, debug, no_rate_limi
             click.echo(f"Total rate limit wait time: {analyzer.total_wait_time:.1f}s")
             click.echo(f"Analysis time: {analysis_total_time:.1f}s")
             click.echo(f"Rate limit overhead: {(analyzer.total_wait_time/analysis_total_time)*100:.1f}%")
-            click.echo(f"Average per repo: {analysis_total_time/len(results):.2f}s")
+            click.echo(f"Average per repo: {analysis_total_time/len(repositories):.2f}s")
             click.echo(f"Expected rate limit interval: {1.0/rate_limit:.3f}s")
         
     except Exception as e:
