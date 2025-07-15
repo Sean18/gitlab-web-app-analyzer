@@ -218,6 +218,39 @@ class GitLabAnalyzer:
         
         return unprocessed
 
+    def show_preview(self, repositories, output_file, show_all=False):
+        """Show preview of repositories that would be analyzed"""
+        # Get already processed repositories
+        processed_repos = self.get_already_processed_repos(output_file)
+        
+        # Separate processed and unprocessed
+        processed = [repo for repo in repositories if repo.name in processed_repos]
+        unprocessed = [repo for repo in repositories if repo.name not in processed_repos]
+        
+        # Display already processed repositories
+        if processed:
+            print(f"\nAlready Processed ({len(processed)} repos):")
+            display_count = len(processed) if show_all else min(10, len(processed))
+            for i, repo in enumerate(processed[:display_count]):
+                print(f"  {repo.name:<40} {repo.web_url}")
+            if not show_all and len(processed) > 10:
+                print(f"  ... (showing first 10 of {len(processed)}, use --preview-all)")
+        
+        # Display repositories to be processed
+        if unprocessed:
+            print(f"\nTo be Processed ({len(unprocessed)} repos):")
+            display_count = len(unprocessed) if show_all else min(10, len(unprocessed))
+            for i, repo in enumerate(unprocessed[:display_count]):
+                print(f"  {repo.name:<40} {repo.web_url}")
+            if not show_all and len(unprocessed) > 10:
+                print(f"  ... (showing first 10 of {len(unprocessed)}, use --preview-all)")
+        
+        # Summary
+        print(f"\nSummary:")
+        print(f"  Total repositories: {len(repositories)}")
+        print(f"  Already processed: {len(processed)}")
+        print(f"  To be processed: {len(unprocessed)}")
+
     def write_csv_header_if_needed(self, output_file):
         """Write CSV header only if file doesn't exist"""
         if not os.path.exists(output_file):
@@ -1164,7 +1197,9 @@ class GitLabAnalyzer:
 @click.option('--no-rate-limit', is_flag=True, help='Disable rate limiting (for testing)')
 @click.option('--max-depth', default=2, help='Maximum directory depth to search (default: 2)')
 @click.option('--max-projects', default=1000, help='Maximum number of projects to analyze (default: 1000)')
-def main(gitlab_url, token, output, name_filter, rate_limit, debug, no_rate_limit, max_depth, max_projects):
+@click.option('--preview', is_flag=True, help='Show first 10 repositories that would be analyzed (with URLs)')
+@click.option('--preview-all', is_flag=True, help='Show all repositories that would be analyzed (with URLs)')
+def main(gitlab_url, token, output, name_filter, rate_limit, debug, no_rate_limit, max_depth, max_projects, preview, preview_all):
     """GitLab Web App Repository Analyzer"""
     
     # Generate default output filename if not provided
@@ -1199,6 +1234,12 @@ def main(gitlab_url, token, output, name_filter, rate_limit, debug, no_rate_limi
         # Get repositories
         click.echo("Fetching repositories...")
         repositories = analyzer.get_repositories(name_filter)
+        
+        # Handle preview mode (before filtering for resume)
+        if preview or preview_all:
+            analyzer.show_preview(repositories, output, show_all=preview_all)
+            return  # Exit after showing preview
+        
         repositories = analyzer.filter_unprocessed_repos(repositories, output)
         click.echo(f"Found {len(repositories)} repositories to analyze")
         
