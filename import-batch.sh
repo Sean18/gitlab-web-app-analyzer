@@ -75,7 +75,6 @@ REPOS=(
     # "https://github.com/dotnet-architecture/eShopOnWeb|test-aspnet-ecommerce"
     # "https://github.com/jasontaylordev/CleanArchitecture|test-aspnet-clean-arch"
     # "https://github.com/dotnet-presentations/blazor-workshop|test-blazor-application"
-    # "https://github.com/aws-samples/serverless-dotnet-demo|test-dotnet-serverless"
     
     # Python Enterprise Applications
     # "https://github.com/django-cms/django-cms|test-django-cms"
@@ -97,25 +96,55 @@ REPOS=(
     # Additional diverse web applications for testing
     
     # ASP.NET Core Web API
-    "https://github.com/FabianGosebrink/ASPNETCore-WebAPI-Sample|test-aspnet-core-webapi-sample"
+    #"https://github.com/FabianGosebrink/ASPNETCore-WebAPI-Sample|test-aspnet-core-webapi-sample"
     
     # ASP.NET Core MVC
-    "https://github.com/dotnet-architecture/eShopOnWeb|test-aspnet-core-mvc-eshop"
+    #"https://github.com/dotnet-architecture/eShopOnWeb|test-aspnet-core-mvc-eshop"
     
     # Blazor Server
-    "https://github.com/JeremyLikness/BlazorServerEFCoreExample|test-blazor-server-efcore"
+    #"https://github.com/JeremyLikness/BlazorServerEFCoreExample|test-blazor-server-efcore"
     
     # Blazor WebAssembly
-    "https://github.com/JeremyLikness/BlazorWasmEFCoreExample|test-blazor-wasm-efcore"
+    #"https://github.com/JeremyLikness/BlazorWasmEFCoreExample|test-blazor-wasm-efcore"
     
     # ASP.NET Framework MVC (Legacy)
-    "https://github.com/izhub/EF6MVC5Example|test-aspnet-mvc5-ef6"
+    #"https://github.com/izhub/EF6MVC5Example|test-aspnet-mvc5-ef6"
     
     # ASP.NET Framework Web API (Legacy)
-    "https://github.com/kiewic/AspNet-WebApi-Sample|test-aspnet-webapi-legacy"
+    #"https://github.com/kiewic/AspNet-WebApi-Sample|test-aspnet-webapi-legacy"
     
     # Minimal APIs (.NET 6+)
-    "https://github.com/cornflourblue/dotnet-6-minimal-api|test-dotnet-minimal-api"
+    #"https://github.com/cornflourblue/dotnet-6-minimal-api|test-dotnet-minimal-api"
+
+     
+
+    #     aws-lambda-java-example: 
+    #   ✅ Web App: YES
+    #   ✅ Type: Java
+    #   ✅ Framework: AWS Lambda
+    #   ✅ Evidence: aws-lambda-java-core in pom.xml
+    "https://github.com/aws-samples/lambda-java8-dynamodb|test-lambda-java8-dynamodb"
+
+    # app-service-java-quickstart:
+    #   ✅ Web App: YES  
+    #   ✅ Type: Java
+    #   ✅ Framework: Azure App
+    #   ✅ Evidence: azure-webapp-maven-plugin + Spring Boot
+    "https://github.com/Azure-Samples/app-service-java-quickstart|test-app-service-java-quickstart"
+
+    # spring-mvc-showcase:
+    #   ✅ Web App: YES
+    #   ✅ Type: Java  
+    #   ✅ Framework: Spring MVC 
+    #   ✅ Evidence: WAR packaging + servlet-api
+    "https://github.com/spring-projects/spring-mvc-showcase|test-spring-mvc-showcase"
+
+    # play-java-starter-example:
+    #   ✅ Web App: YES
+    #   ✅ Type: Java
+    #   ✅ Framework: Play Framework
+    #   ✅ Evidence: build.sbt + Play dependencies
+    #"https://github.com/playframework/play-samples/tree/3.0.x/play-java-starter-example|test-play-java-starter-example"
 )
 
 # Counters

@@ -336,7 +336,7 @@ class GitLabAnalyzer:
     def _is_target_file(self, file_name: str) -> bool:
         """Check if a filename matches our target web app files"""
         target_files = [
-            'package.json', 'requirements.txt', 'pyproject.toml', 'pom.xml', 'build.gradle',
+            'package.json', 'requirements.txt', 'pyproject.toml', 'pom.xml', 'build.gradle', 'build.sbt',
             'go.mod', 'main.go', 'composer.json', 'index.php', 'web.config', 'Dockerfile',
             'serverless.yml', 'host.json', 'local.settings.json', 'packages.config',
             'aws-lambda-tools-defaults.json', 'template.yaml', 'template.yml',
@@ -617,7 +617,17 @@ class GitLabAnalyzer:
                     framework_detected = 'Quarkus'
                     evidence.append('Found Quarkus in pom.xml')
                 
-                # 3. JAX-RS/Jersey
+                # 3. AWS Lambda Java
+                elif 'aws-lambda-java-core' in pom_xml:
+                    framework_detected = 'AWS Lambda'
+                    evidence.append('Found AWS Lambda Java in pom.xml')
+                
+                # 4. Azure Web App
+                elif 'azure-webapp-maven-plugin' in pom_xml:
+                    framework_detected = 'Azure Web App'
+                    evidence.append('Found Azure Web App plugin in pom.xml')
+                
+                # 5. JAX-RS/Jersey
                 elif (any(pattern in pom_xml for pattern in [
                     'jersey-server', 'jersey-container-servlet', 'jersey-container-grizzly2-http',
                     'javax.ws.rs-api', 'org.glassfish.jersey', 'jersey-core'
@@ -625,29 +635,29 @@ class GitLabAnalyzer:
                     framework_detected = 'JAX-RS/Jersey'
                     evidence.append('Found JAX-RS/Jersey in pom.xml')
                 
-                # 4. Spring Boot (most common)
+                # 6. Spring Boot (most common)
                 elif 'spring-boot-starter-web' in pom_xml:
                     framework_detected = 'Spring Boot'
                     evidence.append('Found Spring Boot starter-web in pom.xml')
                 
-                # 5. Spring Boot (parent-based detection)
+                # 7. Spring Boot (parent-based detection)
                 elif 'spring-boot-starter-parent' in pom_xml and any(starter in pom_xml for starter in [
                     'spring-boot-starter', 'spring-web', 'spring-webmvc'
                 ]):
                     framework_detected = 'Spring Boot'
                     evidence.append('Found Spring Boot parent with web dependencies in pom.xml')
                 
-                # 6. Spring Boot (enhanced detection for multi-module projects)
+                # 8. Spring Boot (enhanced detection for multi-module projects)
                 elif 'spring-boot-starter-parent' in pom_xml and ('spring-boot-starter-web' in pom_xml):
                     framework_detected = 'Spring Boot'
                     evidence.append('Found Spring Boot parent with starter-web in pom.xml')
                 
-                # 6. Spring MVC (classic, not Spring Boot)
+                # 9. Spring MVC (classic, not Spring Boot)
                 elif 'spring-webmvc' in pom_xml and 'spring-boot' not in pom_xml:
                     framework_detected = 'Spring MVC'
                     evidence.append('Found Spring MVC in pom.xml')
                 
-                # 7. Generic Spring web detection
+                # 10. Generic Spring web detection
                 elif 'springframework' in pom_xml and any(web_indicator in pom_xml for web_indicator in [
                     'servlet-api', 'spring-web', 'DispatcherServlet'
                 ]):
@@ -790,6 +800,24 @@ class GitLabAnalyzer:
                     analysis['package_manager'] = 'Gradle'
                     confidence_score += 30
                     evidence.append(f'Found {framework_detected} in build.gradle')
+                    analysis['confidence'] = 'HIGH'
+                    analysis['notes'] = '; '.join(evidence)
+                    return analysis  # Early termination
+        
+        # Check for Play Framework (build.sbt files)
+        if 'build.sbt' in file_names and not analysis['backend_framework']:
+            build_sbt = self.get_file_content(project_obj, 'build.sbt')
+            if build_sbt:
+                # Check for Play Framework indicators
+                if any(pattern in build_sbt.lower() for pattern in [
+                    'play', 'com.typesafe.play', 'playframework', 'play-java'
+                ]):
+                    analysis['is_web_app'] = 'YES'
+                    analysis['web_app_type'] = 'Java'
+                    analysis['backend_framework'] = 'Play Framework'
+                    analysis['package_manager'] = 'SBT'
+                    confidence_score += 30
+                    evidence.append('Found Play Framework in build.sbt')
                     analysis['confidence'] = 'HIGH'
                     analysis['notes'] = '; '.join(evidence)
                     return analysis  # Early termination
