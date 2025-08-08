@@ -34,10 +34,11 @@ import csv
 import time
 import sys
 from pathlib import Path
+from datetime import datetime
 
 # Configuration
 GITLAB_URL = "https://gitlab.com"
-OUTPUT_FILE = "test-results.csv"
+OUTPUT_FILE = f"test-analyzer-results-{datetime.now().strftime('%Y%m%d-%H%M%S')}.csv"
 PERFORMANCE_TARGET_MINUTES = 30.0
 PERFORMANCE_TARGET_SECONDS_PER_REPO = 1.8
 
@@ -53,7 +54,6 @@ EXPECTED_APPS = [
     "test-quarkus-todo",
     "test-fastapi-fullstack",
     "test-django-cms",
-    "test-dotnet-serverless",
     "test-blazor-application",
     "test-aspnet-clean-arch",
     "test-aspnet-ecommerce",
@@ -84,7 +84,12 @@ EXPECTED_APPS = [
     "Spring Petclinic",
     "Go Gin Example",
     "Laravel",
-    "Flask"
+    "Flask",
+    # Recent repositories added 2025-01-08
+    "test-lambda-java8-dynamodb",
+    "test-app-service-java-quickstart", 
+    "test-play-java-starter-example",
+    "test-spring-mvc-showcase"
 ]
 
 def validate_prerequisites(gitlab_token):
