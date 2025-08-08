@@ -40,7 +40,7 @@ Run the regression test suite to validate detection accuracy:
 ./simple-test.sh YOUR_GITLAB_TOKEN
 ```
 
-This tests 34 web applications across multiple frameworks and should show 100% detection rate.
+This tests 44 web applications across multiple frameworks and should show 100% detection rate.
 
 ## Framework Detection
 
@@ -60,8 +60,25 @@ CSV file with columns:
 - Web App Type, Frontend/Backend Framework, Package Manager
 - Languages, Date Created, Detection Notes
 
+## CLI Options
+
+```
+--gitlab-url TEXT        GitLab instance URL (or set GITLAB_URL env var)
+--token TEXT            Personal access token (or set GITLAB_TOKEN env var)
+--output TEXT           Output CSV filename (default: timestamp-based)
+--filter TEXT           Repository name filter (default: all repositories)
+--rate-limit FLOAT      Requests per second (default: 20)
+--debug                 Enable debug logging for performance analysis
+--no-rate-limit         Disable rate limiting (for testing)
+--max-depth INTEGER     Maximum directory depth to search (default: 2)
+--max-projects INTEGER  Maximum number of projects to analyze (default: 1000)
+--preview               Show first 10 repositories that would be analyzed
+--preview-all           Show all repositories that would be analyzed
+--help                  Show help message and exit
+```
+
 ## Performance
 
 - **Target**: 1000 repositories in 30 minutes
-- **Rate Limit**: 5 requests/second
-- **Current Test**: 34 apps analyzed in 198 seconds (100% detection rate)
+- **Rate Limit**: 20 requests/second (default)
+- **Current Test**: 44 apps analyzed with 100% detection rate
