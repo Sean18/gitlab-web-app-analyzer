@@ -627,37 +627,43 @@ class GitLabAnalyzer:
                     framework_detected = 'Azure Web App'
                     evidence.append('Found Azure Web App plugin in pom.xml')
                 
-                # 5. JAX-RS/Jersey
+                # 5. Traditional WAR applications
+                elif '<packaging>war</packaging>' in pom_xml:
+                    framework_detected = 'Java EE/Jakarta EE'
+                    evidence.append('Found WAR packaging in pom.xml')
+                
+                # 6. JAX-RS/Jersey/RESTEasy
                 elif (any(pattern in pom_xml for pattern in [
                     'jersey-server', 'jersey-container-servlet', 'jersey-container-grizzly2-http',
-                    'javax.ws.rs-api', 'org.glassfish.jersey', 'jersey-core'
+                    'javax.ws.rs-api', 'jakarta.ws.rs-api', 'org.glassfish.jersey', 'jersey-core',
+                    'resteasy-core', 'resteasy-undertow', 'resteasy-jackson-provider', 'org.jboss.resteasy'
                 ])):
                     framework_detected = 'JAX-RS/Jersey'
                     evidence.append('Found JAX-RS/Jersey in pom.xml')
                 
-                # 6. Spring Boot (most common)
+                # 7. Spring Boot (most common)
                 elif 'spring-boot-starter-web' in pom_xml:
                     framework_detected = 'Spring Boot'
                     evidence.append('Found Spring Boot starter-web in pom.xml')
                 
-                # 7. Spring Boot (parent-based detection)
+                # 8. Spring Boot (parent-based detection)
                 elif 'spring-boot-starter-parent' in pom_xml and any(starter in pom_xml for starter in [
                     'spring-boot-starter', 'spring-web', 'spring-webmvc'
                 ]):
                     framework_detected = 'Spring Boot'
                     evidence.append('Found Spring Boot parent with web dependencies in pom.xml')
                 
-                # 8. Spring Boot (enhanced detection for multi-module projects)
+                # 9. Spring Boot (enhanced detection for multi-module projects)
                 elif 'spring-boot-starter-parent' in pom_xml and ('spring-boot-starter-web' in pom_xml):
                     framework_detected = 'Spring Boot'
                     evidence.append('Found Spring Boot parent with starter-web in pom.xml')
                 
-                # 9. Spring MVC (classic, not Spring Boot)
+                # 10. Spring MVC (classic, not Spring Boot)
                 elif 'spring-webmvc' in pom_xml and 'spring-boot' not in pom_xml:
                     framework_detected = 'Spring MVC'
                     evidence.append('Found Spring MVC in pom.xml')
                 
-                # 10. Generic Spring web detection
+                # 11. Generic Spring web detection
                 elif 'springframework' in pom_xml and any(web_indicator in pom_xml for web_indicator in [
                     'servlet-api', 'spring-web', 'DispatcherServlet'
                 ]):
