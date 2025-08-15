@@ -193,6 +193,91 @@ class GitLabAnalyzer:
         except Exception as e:
             raise click.ClickException(f"Failed to fetch repositories: {e}")
     
+    def get_repositories_from_file(self, input_file: str) -> List[Any]:
+        """Get repositories from input file containing URLs or project paths (one per line)"""
+        if not os.path.exists(input_file):
+            raise click.ClickException(f"Input file not found: {input_file}")
+        
+        try:
+            click.echo(f"Reading repositories from file: {input_file}")
+            
+            repositories = []
+            project_paths = []
+            
+            # Read and parse the input file
+            with open(input_file, 'r', encoding='utf-8') as f:
+                for line_num, line in enumerate(f, 1):
+                    line = line.strip()
+                    
+                    # Skip empty lines and comments
+                    if not line or line.startswith('#'):
+                        continue
+                    
+                    # Extract project path from URL or use as-is
+                    project_path = self._extract_project_path(line, line_num)
+                    if project_path:
+                        project_paths.append(project_path)
+            
+            click.echo(f"Found {len(project_paths)} repository paths in file")
+            
+            # Fetch each repository from GitLab API
+            for i, project_path in enumerate(project_paths):
+                try:
+                    click.echo(f"Fetching repository {i+1}/{len(project_paths)}: {project_path}")
+                    self._rate_limit_wait()
+                    
+                    # Use GitLab API to get project by path
+                    project = self._api_call_with_retry(
+                        lambda: self.gl.projects.get(project_path),
+                        call_type='project_info'
+                    )
+                    
+                    if project:
+                        repositories.append(project)
+                    else:
+                        click.echo(f"Warning: Could not find repository: {project_path}")
+                        
+                except Exception as e:
+                    click.echo(f"Warning: Failed to fetch repository '{project_path}': {e}")
+                    continue
+            
+            click.echo(f"Successfully loaded {len(repositories)} repositories from file")
+            
+            # Apply deleted repository filtering (same as API method)
+            original_count = len(repositories)
+            repositories = [p for p in repositories if 'deleted' not in p.name.lower()]
+            deleted_count = original_count - len(repositories)
+            if deleted_count > 0:
+                click.echo(f"Filtered out {deleted_count} deleted repositories")
+            
+            return repositories
+            
+        except Exception as e:
+            raise click.ClickException(f"Failed to read repositories from file: {e}")
+    
+    def _extract_project_path(self, line: str, line_num: int) -> Optional[str]:
+        """Extract GitLab project path from URL or validate project path format"""
+        import re
+        
+        # If it's a GitLab URL, extract the project path
+        if line.startswith('http'):
+            # Match GitLab URL pattern: https://gitlab.com/group/project or https://gitlab.example.com/group/project
+            url_match = re.match(r'https?://[^/]+/(.+?)(?:\.git)?/?$', line)
+            if url_match:
+                project_path = url_match.group(1).rstrip('/')
+                return project_path
+            else:
+                click.echo(f"Warning: Invalid URL format at line {line_num}: {line}")
+                return None
+        else:
+            # Assume it's already a project path (group/project format)
+            # Basic validation: should contain at least one slash
+            if '/' in line:
+                return line.rstrip('/')
+            else:
+                click.echo(f"Warning: Invalid project path format at line {line_num}: {line} (should be 'group/project')")
+                return None
+    
     def get_already_processed_repos(self, output_file):
         """Get list of repository names already processed from existing CSV"""
         if not os.path.exists(output_file):
@@ -1215,7 +1300,8 @@ class GitLabAnalyzer:
 @click.option('--max-projects', default=1000, help='Maximum number of projects to analyze (default: 1000)')
 @click.option('--preview', is_flag=True, help='Show first 10 repositories that would be analyzed (with URLs)')
 @click.option('--preview-all', is_flag=True, help='Show all repositories that would be analyzed (with URLs)')
-def main(gitlab_url, token, output, name_filter, rate_limit, debug, no_rate_limit, max_depth, max_projects, preview, preview_all):
+@click.option('--input-file', help='Input file containing repository URLs/paths (one per line)')
+def main(gitlab_url, token, output, name_filter, rate_limit, debug, no_rate_limit, max_depth, max_projects, preview, preview_all, input_file):
     """GitLab Web App Repository Analyzer"""
     
     # Generate default output filename if not provided
@@ -1247,9 +1333,29 @@ def main(gitlab_url, token, output, name_filter, rate_limit, debug, no_rate_limi
             analyzer.no_rate_limit = True
             click.echo("Rate limiting disabled for testing")
         
-        # Get repositories
-        click.echo("Fetching repositories...")
-        repositories = analyzer.get_repositories(name_filter)
+        # Validate input options
+        if input_file and name_filter:
+            click.echo("Warning: --filter option will be applied to repositories from input file")
+        
+        # Get repositories (choose between file input or API discovery)
+        if input_file:
+            click.echo("Using input file for repository list...")
+            repositories = analyzer.get_repositories_from_file(input_file)
+            
+            # Apply name filter if provided (same logic as API method)
+            if name_filter:
+                click.echo(f"Applying filter: {name_filter}")
+                original_count = len(repositories)
+                repositories = [p for p in repositories if name_filter.lower() in p.name.lower()]
+                click.echo(f"After filtering: {len(repositories)} repositories (was {original_count})")
+            
+            # Apply max_projects limit (same as API method)
+            if len(repositories) > max_projects:
+                click.echo(f"Limiting to first {max_projects} repositories (found {len(repositories)})")
+                repositories = repositories[:max_projects]
+        else:
+            click.echo("Fetching repositories from GitLab API...")
+            repositories = analyzer.get_repositories(name_filter)
         
         # Handle preview mode (before filtering for resume)
         if preview or preview_all:

@@ -32,6 +32,20 @@ python3 gitlab-web-app-analyzer.py --gitlab-url https://gitlab.com --token YOUR_
 python3 gitlab-web-app-analyzer.py --gitlab-url https://gitlab.com --token YOUR_GITLAB_TOKEN --output my-analysis.csv
 ```
 
+### Analyze Specific Repositories from File
+```bash
+python3 gitlab-web-app-analyzer.py --gitlab-url https://gitlab.com --token YOUR_GITLAB_TOKEN --input-file repos.txt
+```
+
+Example `repos.txt` format:
+```
+# One repository URL or path per line
+https://gitlab.com/group1/webapp1
+https://gitlab.com/group2/webapp2
+group3/webapp3
+# Comments and blank lines are ignored
+```
+
 ## Testing
 
 Run the regression test suite to validate detection accuracy:
@@ -74,6 +88,7 @@ CSV file with columns:
 --max-projects INTEGER  Maximum number of projects to analyze (default: 1000)
 --preview               Show first 10 repositories that would be analyzed
 --preview-all           Show all repositories that would be analyzed
+--input-file TEXT       Input file containing repository URLs/paths (one per line)
 --help                  Show help message and exit
 ```
 
