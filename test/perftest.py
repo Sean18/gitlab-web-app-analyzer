@@ -18,9 +18,19 @@ import click
 # Import the enhanced analyzer
 import importlib.util
 import sys
+from pathlib import Path
+
+def find_analyzer_script():
+    """Find the analyzer script relative to this test script's location"""
+    # Get the directory where this test script is located
+    test_script_dir = Path(__file__).parent.absolute()
+    # Look for the analyzer script in the parent directory
+    analyzer_path = test_script_dir.parent / "gitlab-web-app-analyzer.py"
+    return analyzer_path
 
 # Load the analyzer module from the hyphenated filename
-spec = importlib.util.spec_from_file_location("gitlab_web_app_analyzer", "gitlab-web-app-analyzer.py")
+analyzer_path = find_analyzer_script()
+spec = importlib.util.spec_from_file_location("gitlab_web_app_analyzer", str(analyzer_path))
 analyzer_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(analyzer_module)
 

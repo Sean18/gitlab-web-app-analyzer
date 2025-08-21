@@ -33,8 +33,17 @@ import subprocess
 import csv
 import time
 import sys
+import os
 from pathlib import Path
 from datetime import datetime
+
+def find_analyzer_script():
+    """Find the analyzer script relative to this test script's location"""
+    # Get the directory where this test script is located
+    test_script_dir = Path(__file__).parent.absolute()
+    # Look for the analyzer script in the parent directory
+    analyzer_path = test_script_dir.parent / "gitlab-web-app-analyzer.py"
+    return analyzer_path
 
 # Configuration
 GITLAB_URL = "https://gitlab.com"
@@ -99,8 +108,10 @@ def validate_prerequisites(gitlab_token):
         print("Example: python3 test-analyzer.py glpat-xyz123")
         return False
     
-    if not Path("gitlab-web-app-analyzer.py").exists():
+    analyzer_path = find_analyzer_script()
+    if not analyzer_path.exists():
         print("Error: gitlab-web-app-analyzer.py not found")
+        print(f"Looked for: {analyzer_path}")
         return False
     
     return True
@@ -115,10 +126,11 @@ def run_analyzer(gitlab_token):
     print("Running GitLab Web App Analyzer on all repositories...")
     
     start_time = time.time()
+    analyzer_path = find_analyzer_script()
     
     try:
         subprocess.run([
-            "python3", "gitlab-web-app-analyzer.py",
+            "python3", str(analyzer_path),
             "--gitlab-url", GITLAB_URL,
             "--token", gitlab_token,
             "--output", OUTPUT_FILE
