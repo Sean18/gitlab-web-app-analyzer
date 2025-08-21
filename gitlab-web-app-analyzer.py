@@ -26,7 +26,7 @@ from dateutil.parser import parse as parse_date
 from gitlab.exceptions import GitlabError
 
 # Import performance tracking module
-from performance_tracker import create_performance_tracker
+from test.performance_tracker import create_performance_tracker
 
 # Import Rich for enhanced progress display
 from rich.console import Console
@@ -1289,7 +1289,7 @@ class GitLabAnalyzer:
 
 
 @click.command()
-@click.option('--gitlab-url', help='GitLab instance URL')
+@click.option('--gitlab-url', default='https://gitlab.com', help='GitLab instance URL')
 @click.option('--token', help='Personal access token')
 @click.option('--output', help='Output CSV filename')
 @click.option('--filter', 'name_filter', default=None, help='Repository name filter (default: all repositories)')
