@@ -848,8 +848,11 @@ class GitLabAnalyzer:
                             break
         
         # Check for Gradle (only if it exists and no backend found yet)
-        if 'build.gradle' in file_names and not analysis['backend_framework']:
-            build_gradle = self.get_file_content(project_obj, 'build.gradle')
+        gradle_files = [f for f in file_names if f.endswith('build.gradle')]
+        if gradle_files and not analysis['backend_framework']:
+            # Use the first build.gradle file found
+            gradle_file = gradle_files[0]
+            build_gradle = self.get_file_content(project_obj, gradle_file)
             if build_gradle:
                 # Priority-based Java web framework detection for Gradle
                 framework_detected = None
@@ -857,13 +860,13 @@ class GitLabAnalyzer:
                 # 1. Spring WebFlux
                 if 'spring-boot-starter-webflux' in build_gradle or 'spring-webflux' in build_gradle:
                     framework_detected = 'Spring WebFlux'
-                    evidence.append('Found Spring WebFlux in build.gradle')
+                    evidence.append(f'Found Spring WebFlux in {gradle_file}')
                 
                 # 2. Quarkus
                 elif ('quarkus-resteasy' in build_gradle or 'quarkus-gradle-plugin' in build_gradle or
                       'io.quarkus' in build_gradle):
                     framework_detected = 'Quarkus'
-                    evidence.append('Found Quarkus in build.gradle')
+                    evidence.append(f'Found Quarkus in {gradle_file}')
                 
                 # 3. JAX-RS/Jersey
                 elif (any(pattern in build_gradle for pattern in [
@@ -871,17 +874,17 @@ class GitLabAnalyzer:
                     'org.glassfish.jersey', 'jersey-core'
                 ])):
                     framework_detected = 'JAX-RS/Jersey'
-                    evidence.append('Found JAX-RS/Jersey in build.gradle')
+                    evidence.append(f'Found JAX-RS/Jersey in {gradle_file}')
                 
                 # 4. Spring Boot
                 elif 'spring-boot-starter-web' in build_gradle:
                     framework_detected = 'Spring Boot'
-                    evidence.append('Found Spring Boot starter-web in build.gradle')
+                    evidence.append(f'Found Spring Boot starter-web in {gradle_file}')
                 
                 # 5. Spring MVC
                 elif 'spring-webmvc' in build_gradle and 'spring-boot' not in build_gradle:
                     framework_detected = 'Spring MVC'
-                    evidence.append('Found Spring MVC in build.gradle')
+                    evidence.append(f'Found Spring MVC in {gradle_file}')
                 
                 # If any Java web framework detected
                 if framework_detected:
@@ -890,14 +893,17 @@ class GitLabAnalyzer:
                     analysis['backend_framework'] = framework_detected
                     analysis['package_manager'] = 'Gradle'
                     confidence_score += 30
-                    evidence.append(f'Found {framework_detected} in build.gradle')
+                    evidence.append(f'Found {framework_detected} in {gradle_file}')
                     analysis['confidence'] = 'HIGH'
                     analysis['notes'] = '; '.join(evidence)
                     return analysis  # Early termination
         
         # Check for Play Framework (build.sbt files)
-        if 'build.sbt' in file_names and not analysis['backend_framework']:
-            build_sbt = self.get_file_content(project_obj, 'build.sbt')
+        sbt_files = [f for f in file_names if f.endswith('build.sbt')]
+        if sbt_files and not analysis['backend_framework']:
+            # Use the first build.sbt file found
+            sbt_file = sbt_files[0]
+            build_sbt = self.get_file_content(project_obj, sbt_file)
             if build_sbt:
                 # Check for Play Framework indicators
                 if any(pattern in build_sbt.lower() for pattern in [
@@ -908,7 +914,7 @@ class GitLabAnalyzer:
                     analysis['backend_framework'] = 'Play Framework'
                     analysis['package_manager'] = 'SBT'
                     confidence_score += 30
-                    evidence.append('Found Play Framework in build.sbt')
+                    evidence.append(f'Found Play Framework in {sbt_file}')
                     analysis['confidence'] = 'HIGH'
                     analysis['notes'] = '; '.join(evidence)
                     return analysis  # Early termination
@@ -1076,31 +1082,40 @@ class GitLabAnalyzer:
                         break
         
         # Check for index.php (only if it exists and no backend found yet)
-        if 'index.php' in file_names and not analysis['backend_framework']:
-            index_php = self.get_file_content(project_obj, 'index.php')
+        index_php_files = [f for f in file_names if f.endswith('index.php')]
+        if index_php_files and not analysis['backend_framework']:
+            # Use the first index.php file found
+            index_php_file = index_php_files[0]
+            index_php = self.get_file_content(project_obj, index_php_file)
             if index_php:
                 analysis['is_web_app'] = 'YES'
                 analysis['web_app_type'] = 'PHP'
                 analysis['backend_framework'] = 'PHP'
                 confidence_score += 20
-                evidence.append('Found index.php file')
+                evidence.append(f'Found {index_php_file} file')
         
         # Check for serverless functions (only if files exist)
-        if 'serverless.yml' in file_names:
-            serverless_yml = self.get_file_content(project_obj, 'serverless.yml')
+        serverless_files = [f for f in file_names if f.endswith('serverless.yml')]
+        if serverless_files:
+            # Use the first serverless.yml file found
+            serverless_file = serverless_files[0]
+            serverless_yml = self.get_file_content(project_obj, serverless_file)
             if serverless_yml:
                 analysis['is_web_app'] = 'YES'
                 analysis['web_app_type'] = 'AWS Lambda'
                 confidence_score += 30
-                evidence.append('Found serverless.yml')
+                evidence.append(f'Found {serverless_file}')
         
-        if 'host.json' in file_names:
-            host_json = self.get_file_content(project_obj, 'host.json')
+        host_json_files = [f for f in file_names if f.endswith('host.json')]
+        if host_json_files:
+            # Use the first host.json file found
+            host_json_file = host_json_files[0]
+            host_json = self.get_file_content(project_obj, host_json_file)
             if host_json:
                 analysis['is_web_app'] = 'YES'
                 analysis['web_app_type'] = 'Azure Functions'
                 confidence_score += 30
-                evidence.append('Found host.json (Azure Functions)')
+                evidence.append(f'Found {host_json_file} (Azure Functions)')
         
         # Set confidence level
         if confidence_score >= 30:
