@@ -72,6 +72,7 @@ EXPECTED_APPS = [
     "test-java-serverless",
     "test-spring-ecommerce",
     "test-spring-petclinic",
+    "SpringBootExample_JP",
     # New .NET repositories added 2025-01-08
     "test-aspnet-core-webapi-sample",
     "test-aspnet-core-mvc-eshop",
